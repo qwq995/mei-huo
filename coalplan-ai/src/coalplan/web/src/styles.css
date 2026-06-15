@@ -1,0 +1,438 @@
+:root {
+  color-scheme: light;
+  font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+  background: #f5f6f4;
+  color: #1e2622;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 1120px;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button,
+.file-button {
+  border: 1px solid #9aa89f;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1e2622;
+  cursor: pointer;
+  padding: 8px 12px;
+}
+
+button:hover,
+.file-button:hover {
+  border-color: #506b5a;
+}
+
+button:disabled,
+.file-button.disabled {
+  color: #8c9690;
+  cursor: not-allowed;
+  background: #eef0ec;
+}
+
+.app-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  height: 76px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 14px 24px;
+  border-bottom: 1px solid #d7ddd6;
+  background: #ffffff;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.25;
+}
+
+.topbar p {
+  margin: 6px 0 0;
+  color: #5e6a63;
+  font-size: 13px;
+}
+
+.busy-pill,
+.idle-pill {
+  min-width: 72px;
+  text-align: center;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+.busy-pill {
+  color: #5f2b00;
+  background: #ffe8ca;
+}
+
+.idle-pill {
+  color: #184d31;
+  background: #dff2e5;
+}
+
+.workspace {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 340px minmax(420px, 1fr) 390px;
+  gap: 14px;
+  padding: 14px;
+  min-height: 0;
+}
+
+.left-column,
+.right-column,
+.middle-column {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+}
+
+.panel {
+  background: #ffffff;
+  border: 1px solid #d7ddd6;
+  border-radius: 8px;
+  min-height: 0;
+}
+
+.panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #e6eae5;
+}
+
+.panel-heading h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.status {
+  color: #607066;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.upload-panel {
+  padding-bottom: 14px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  color: #4d5b52;
+  font-size: 13px;
+}
+
+.field input {
+  width: 100%;
+  border: 1px solid #cfd7d0;
+  border-radius: 6px;
+  padding: 9px 10px;
+}
+
+.field select {
+  width: 100%;
+  border: 1px solid #cfd7d0;
+  border-radius: 6px;
+  padding: 9px 10px;
+  background: #ffffff;
+}
+
+.form-body {
+  padding-bottom: 14px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 14px;
+}
+
+.actions.compact {
+  padding: 12px 14px;
+  border-bottom: 1px solid #eef1ed;
+}
+
+.file-button input {
+  display: none;
+}
+
+.tree-panel {
+  flex: 1;
+}
+
+.tree-scroll {
+  height: calc(100vh - 306px);
+  overflow: auto;
+  padding: 8px;
+}
+
+.tree-node {
+  margin: 2px 0;
+}
+
+.tree-button {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+  border-color: transparent;
+  background: transparent;
+}
+
+.tree-button.selected {
+  background: #e7efe9;
+  border-color: #8dac96;
+}
+
+.tree-label {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+}
+
+.tree-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge {
+  flex: none;
+  border-radius: 999px;
+  background: #efe7d3;
+  color: #6c5017;
+  padding: 2px 6px;
+  font-size: 12px;
+}
+
+.preview-panel,
+.final-panel {
+  flex: 1;
+}
+
+.source-strip {
+  max-height: 210px;
+  overflow: auto;
+  padding: 12px 14px;
+  border-bottom: 1px solid #eef1ed;
+  background: #fbfcfa;
+}
+
+.source-strip h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #4c5d53;
+}
+
+.source-item {
+  border: 1px solid #e0e6df;
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 8px;
+}
+
+.source-item strong {
+  display: block;
+  font-size: 12px;
+  color: #27362c;
+  margin-bottom: 4px;
+}
+
+.source-item p,
+.empty-text {
+  margin: 0;
+  color: #607066;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.split-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 12px 14px;
+  min-height: 0;
+}
+
+.split-list h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #4c5d53;
+}
+
+.toc-list,
+.task-list {
+  height: calc(100vh - 228px);
+  overflow: auto;
+  border: 1px solid #e0e6df;
+  border-radius: 6px;
+  background: #fbfcfa;
+  padding: 8px;
+}
+
+.toc-item {
+  border-bottom: 1px solid #edf1ec;
+  padding: 7px 6px;
+}
+
+.toc-item strong {
+  display: block;
+  font-size: 12px;
+  color: #27362c;
+  line-height: 1.45;
+}
+
+.toc-item span {
+  display: block;
+  margin-top: 2px;
+  color: #748077;
+  font-size: 11px;
+}
+
+.toc-item p {
+  margin: 4px 0 0;
+  color: #607066;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.task-button {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+  text-align: left;
+}
+
+.task-button.selected {
+  background: #e7efe9;
+  border-color: #8dac96;
+}
+
+.task-button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-button em {
+  flex: none;
+  color: #607066;
+  font-style: normal;
+  font-size: 12px;
+}
+
+.progress-panel {
+  min-height: 230px;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  padding: 12px 14px;
+}
+
+.metric {
+  border: 1px solid #e0e6df;
+  border-radius: 6px;
+  padding: 8px;
+  display: grid;
+  gap: 4px;
+}
+
+.metric strong {
+  font-size: 20px;
+}
+
+.metric span {
+  color: #637269;
+  font-size: 12px;
+}
+
+.log-list {
+  max-height: 150px;
+  overflow: auto;
+  padding: 0 14px 12px;
+  color: #435047;
+  font-size: 12px;
+}
+
+.log-list p {
+  margin: 0 0 6px;
+}
+
+.markdown-preview {
+  margin: 0;
+  padding: 14px;
+  height: calc(100vh - 178px);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.58;
+  color: #223027;
+  background: #fbfcfa;
+  font-family: "Consolas", "Microsoft YaHei", monospace;
+  font-size: 13px;
+}
+
+.markdown-preview.chapter {
+  height: calc(100vh - 401px);
+}
+
+.final-panel .markdown-preview {
+  height: 280px;
+}
+
+@media (max-width: 1180px) {
+  body {
+    min-width: 0;
+  }
+
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .tree-scroll,
+  .markdown-preview,
+  .markdown-preview.chapter,
+  .final-panel .markdown-preview {
+    height: 360px;
+  }
+}

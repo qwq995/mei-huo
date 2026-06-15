@@ -1,0 +1,9 @@
+.coalplan-data/
+.coalplan-demo*/
+.coalplan-real-run*/
+src/coalplan/web/dist/
+src/coalplan/web/node_modules/
+src/coalplan/web/tsconfig.tsbuildinfo
+__pycache__/
+*.py[cod]
+.pytest_cache/

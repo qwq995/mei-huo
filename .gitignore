@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+
+# Node / frontend
+node_modules/
+.vite/
+coverage/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local environment and secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Project runtime artifacts
+.coalplan-real-run*/
+
+# Keep the cloud repository focused on CoalPlan AI.
+/README.md
+/pyproject.toml
+/app/
+/tests/
+/construction-org-toc-refiner-skill/
+/construction-org-toc-skill/
+/施组目录结构_纯文本/
+/本周工作结果_20260612/
+/飞书_安能方案生成与审计_项目执行_施工组织设计模板/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
