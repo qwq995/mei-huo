@@ -162,7 +162,7 @@
 
 ### `POST /projects/{project_id}/directory`
 
-生成项目概况、模板化目录规划、项目级可编辑目录节点、章节任务。
+生成基础项目目录、项目概况、项目级可编辑目录节点、章节任务。该接口优先保证“目录可用”，不会因为 AI 目录规划失败而阻塞用户继续编辑。
 
 返回：
 
@@ -172,9 +172,22 @@
   "template": {},
   "source_toc": {},
   "outline": {},
-  "chapter_tasks": []
+  "chapter_tasks": [],
+  "profile_status": "ready",
+  "outline_status": "not_run",
+  "outline_source": "template",
+  "warnings": [
+    "已生成基础模板目录。可继续手动编辑，或点击 AI 优化目录生成可确认的修改建议。"
+  ]
 }
 ```
+
+字段说明：
+
+- `profile_status`：`ready | not_ready`。
+- `outline_status`：`not_run | planned`。
+- `outline_source`：`template | ai_plan`。
+- `warnings`：给前端展示的用户友好提示。
 
 ### `GET /projects/{project_id}/directory`
 
@@ -250,6 +263,41 @@
 ### `POST /projects/{project_id}/outline/proposals/{proposal_id}/apply`
 
 确认应用目录 proposal。
+
+### `POST /projects/{project_id}/outline/ai-plan`
+
+基于项目概况、投标目录和模板树生成 AI 目录优化建议。该接口只创建 proposal，不直接覆盖当前项目目录。
+
+请求：
+
+```json
+{
+  "suggestion": "请基于项目概况、投标目录和模板四模块优化项目目录。"
+}
+```
+
+返回：
+
+```json
+{
+  "id": "proposal_xxx",
+  "target_type": "outline",
+  "target_id": "project_xxx",
+  "suggestion": "请基于项目概况、投标目录和模板四模块优化项目目录。",
+  "preview": {
+    "nodes": []
+  },
+  "status": "pending"
+}
+```
+
+前端推荐交互：
+
+1. 用户点击“生成基础目录”，调用 `POST /directory`。
+2. 用户可立即手动编辑目录。
+3. 用户点击“AI 优化目录”，调用 `POST /outline/ai-plan`。
+4. 前端展示 proposal 预览。
+5. 用户确认后调用 `POST /outline/proposals/{proposal_id}/apply`。
 
 ## 5. 章节工作区接口
 

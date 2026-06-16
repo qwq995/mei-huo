@@ -314,6 +314,16 @@ class WorkspaceStore:
                     for key, value in patch.items():
                         if key in {"title", "level", "sort_order", "enabled", "parent_id"}:
                             setattr(row, key, value)
+                    json_fields = {
+                        "source_rules": "source_rules_json",
+                        "auto_fill": "auto_fill_json",
+                        "manual_fill": "manual_fill_json",
+                        "special_notes": "special_notes_json",
+                    }
+                    for key, column in json_fields.items():
+                        if key in patch:
+                            setattr(row, column, _json(patch[key]))
+                    row.updated_at = datetime.now()
             proposal.status = "applied"
             proposal.applied_at = datetime.now()
             session.commit()

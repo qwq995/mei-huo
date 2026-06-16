@@ -145,6 +145,10 @@ class DirectoryResponse(BaseModel):
     source_toc: SourceTocResponse | None = None
     outline: OutlinePlanResponse | None = None
     chapter_tasks: list[dict] = Field(default_factory=list)
+    profile_status: str = "not_ready"
+    outline_status: str = "not_run"
+    outline_source: str = "template"
+    warnings: list[str] = Field(default_factory=list)
 
 
 def project_summary(project) -> ProjectSummaryResponse:

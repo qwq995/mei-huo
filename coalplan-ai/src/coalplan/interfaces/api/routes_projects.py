@@ -191,6 +191,15 @@ def get_directory(project_id: str, request: Request):
 
 
 def _directory_response(project) -> DirectoryResponse:
+    warnings = []
+    profile_status = "ready" if project.project_profile is not None else "not_ready"
+    outline_status = "planned" if project.outline_plan is not None else "not_run"
+    outline_source = "ai_plan" if project.outline_plan is not None else "template"
+    if project.outline_plan is None:
+        warnings.append("已生成基础模板目录。可继续手动编辑，或点击 AI 优化目录生成可确认的修改建议。")
+    if project.project_profile and project.project_profile.missing_items:
+        if any("兜底" in item or "失败" in item for item in project.project_profile.missing_items):
+            warnings.append("项目概况使用了基础兜底画像，请人工补充关键信息后再正式生成。")
     template = None
     if project.template_tree is not None:
         template = TemplateTreeResponse(template_id=project.template_tree.id, name=project.template_tree.name, nodes=_nodes(project.template_tree.nodes))
@@ -211,7 +220,17 @@ def _directory_response(project) -> DirectoryResponse:
     tasks = []
     if project.runs:
         tasks = [_task_dict(task) for task in project.runs[-1].chapter_tasks]
-    return DirectoryResponse(project=project_summary(project), template=template, source_toc=source_toc, outline=outline, chapter_tasks=tasks)
+    return DirectoryResponse(
+        project=project_summary(project),
+        template=template,
+        source_toc=source_toc,
+        outline=outline,
+        chapter_tasks=tasks,
+        profile_status=profile_status,
+        outline_status=outline_status,
+        outline_source=outline_source,
+        warnings=warnings,
+    )
 
 
 def _task_dict(task) -> dict:

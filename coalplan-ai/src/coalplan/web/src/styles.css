@@ -196,6 +196,10 @@ textarea {
   padding: 8px 12px 12px;
 }
 
+.button-row.no-pad {
+  padding: 4px 0 10px;
+}
+
 .project-list {
   max-height: 170px;
   overflow: auto;
@@ -340,7 +344,8 @@ textarea {
 .toc-list article,
 .saved-list article,
 .attachment-list article,
-.proposal-list article {
+.proposal-list article,
+.inline-proposal {
   border: 1px solid #e1e7e2;
   border-radius: 6px;
   background: #fbfcfa;
@@ -355,6 +360,17 @@ textarea {
   color: #28362e;
   font-size: 12px;
   line-height: 1.45;
+}
+
+.inline-proposal {
+  margin-top: 8px;
+}
+
+.inline-proposal p {
+  margin: 6px 0 8px;
+  color: #607066;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .toc-list span,

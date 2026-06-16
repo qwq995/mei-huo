@@ -33,11 +33,14 @@ def generate_project_profile(
     artifacts: ArtifactRepository,
 ) -> ProjectProfile:
     source_sections = _select_profile_sections(sections, limit=18)
-    data = llm.complete_json(
-        build_project_profile_prompt(toc_items=toc_items, sections=source_sections),
-        schema_name="ProjectProfile",
-    )
-    profile = ProjectProfile(**data)
+    try:
+        data = llm.complete_json(
+            build_project_profile_prompt(toc_items=toc_items, sections=source_sections),
+            schema_name="ProjectProfile",
+        )
+        profile = ProjectProfile(**data)
+    except Exception:
+        profile = _fallback_profile(source_sections)
     result = ProjectProfileValidator().validate(profile, toc_items)
     if not result.passed:
         raise ValueError("; ".join(issue.message for issue in result.issues))
@@ -137,3 +140,21 @@ def _compact_toc(toc_items: list[SourceTocItem]) -> list[dict]:
         }
         for item in toc_items
     ]
+
+
+def _fallback_profile(sections: list[MarkdownSection]) -> ProjectProfile:
+    first = next((section for section in sections if section.content.strip()), None)
+    source_ids = [section.id for section in sections[:8]]
+    return ProjectProfile(
+        project_name=first.title_path[-1] if first and first.title_path else None,
+        project_type=None,
+        location=None,
+        construction_scope=[],
+        key_quantities=[],
+        main_methods=[],
+        schedule=[],
+        quality_safety_environment_targets=[],
+        risk_points=[],
+        missing_items=["AI 项目概况抽取失败，已使用基础兜底画像；请人工补充项目名称、类型、地点、范围、工期和质量安全环保目标。"],
+        source_section_ids=source_ids,
+    )

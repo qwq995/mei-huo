@@ -19,11 +19,14 @@ def plan_template_outline(
     llm: StructuredLLMClient,
     artifacts: ArtifactRepository,
 ) -> TemplateOutlinePlan:
-    data = llm.complete_json(
-        build_template_outline_prompt(profile=profile, toc_items=toc_items, template_tree=template_tree),
-        schema_name="TemplateOutlinePlan",
-    )
-    outline = TemplateOutlinePlan(**data)
+    try:
+        data = llm.complete_json(
+            build_template_outline_prompt(profile=profile, toc_items=toc_items, template_tree=template_tree),
+            schema_name="TemplateOutlinePlan",
+        )
+        outline = TemplateOutlinePlan(**data)
+    except Exception:
+        outline = _fallback_outline(profile, template_tree, toc_items)
     outline = _clean_outline(outline, template_tree, toc_items)
     result = TemplateOutlinePlanValidator().validate(outline, template_tree, toc_items)
     if not result.passed:
@@ -115,6 +118,8 @@ def _flat_template_nodes(template_tree: TemplateTree) -> list[dict]:
 
 
 def _compact_toc(toc_items: list[SourceTocItem]) -> list[dict]:
+    # Keep the planning prompt bounded. Full source matching happens later per chapter.
+    selected = sorted(toc_items, key=lambda item: (item.char_count == 0, -item.char_count))[:180]
     return [
         {
             "section_id": item.section_id,
@@ -122,8 +127,30 @@ def _compact_toc(toc_items: list[SourceTocItem]) -> list[dict]:
             "level": item.level,
             "char_count": item.char_count,
         }
-        for item in toc_items
+        for item in selected
     ]
+
+
+def _fallback_outline(profile: ProjectProfile, template_tree: TemplateTree, toc_items: list[SourceTocItem]) -> TemplateOutlinePlan:
+    valid_source_ids = {item.section_id for item in toc_items}
+    source_hints = [section_id for section_id in profile.source_section_ids if section_id in valid_source_ids][:8]
+    nodes: list[TemplateOutlineNode] = []
+    for node in iter_template_nodes(template_tree.nodes):
+        has_modules = bool(node.source_rules and node.auto_fill and node.manual_fill)
+        nodes.append(
+            TemplateOutlineNode(
+                node_id=node.id,
+                title=node.title,
+                level=node.level,
+                enabled=has_modules,
+                source_hints=source_hints if has_modules else [],
+                main_sources=node.source_rules,
+                auto_fill=node.auto_fill,
+                manual_fill=node.manual_fill,
+                special_notes=node.special_notes,
+            )
+        )
+    return TemplateOutlinePlan(template_id=template_tree.id, nodes=nodes)
 
 
 def _clean_outline(outline: TemplateOutlinePlan, template_tree: TemplateTree, toc_items: list[SourceTocItem]) -> TemplateOutlinePlan:

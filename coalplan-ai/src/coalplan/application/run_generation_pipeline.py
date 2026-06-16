@@ -10,7 +10,7 @@ from coalplan.application.merge_chapters import merge_chapters
 from coalplan.application.persist_source_index import persist_source_index
 from coalplan.application.plan_template_outline import apply_outline_to_template_tree, plan_template_outline
 from coalplan.application.serialization import dump_model, to_json_text
-from coalplan.domain.enums import RunStatus
+from coalplan.domain.enums import RunStatus, TaskStatus
 from coalplan.domain.generation import ChapterDraft, ChapterTask, GenerationRun, Project
 from coalplan.domain.templates import TemplateNode, TemplateTree, iter_template_nodes
 from coalplan.ports.llm import LLMClient, StructuredLLMClient
@@ -65,7 +65,8 @@ class GenerationPipeline:
 
     def prepare_directory(self, project_id: str) -> Project:
         project = self.projects.get(project_id)
-        project = self._ensure_generation_context(project)
+        project = self._ensure_base_context(project)
+        project = self.projects.save(project)
         project.template_tree = self._effective_template_tree(project)
         if not project.runs:
             run = GenerationRun(project_name=project.name, template_id=project.template_id)
@@ -76,6 +77,37 @@ class GenerationPipeline:
             project.runs.append(run)
             project = self.projects.save(project)
         return project
+
+    def propose_ai_outline(self, project_id: str, suggestion: str = "") -> dict:
+        if self.workspace_store is None:
+            raise ValueError("Workspace store is not configured.")
+        project = self.projects.get(project_id)
+        project = self._ensure_base_context(project)
+        if project.template_tree is None or project.project_profile is None or project.source_toc is None:
+            raise ValueError("Project directory context is incomplete.")
+        outline = plan_template_outline(
+            project_id=project.id,
+            profile=project.project_profile,
+            toc_items=project.source_toc.items,
+            template_tree=project.template_tree,
+            llm=self._structured_llm(),
+            artifacts=self.artifacts,
+        )
+        preview_nodes = [
+            {
+                "node_id": node.node_id,
+                "title": node.title,
+                "level": node.level,
+                "enabled": node.enabled,
+                "source_rules": node.main_sources,
+                "auto_fill": node.auto_fill,
+                "manual_fill": node.manual_fill,
+                "special_notes": node.special_notes,
+            }
+            for node in outline.nodes
+        ]
+        text = suggestion or "AI 基于项目概况、投标目录和模板四模块生成目录优化建议。"
+        return self.workspace_store.propose_outline_change(project.id, text, preview_nodes)
 
     def prepare_run(self, project_id: str) -> GenerationRun:
         project = self.projects.get(project_id)
@@ -104,30 +136,34 @@ class GenerationPipeline:
         run.status = RunStatus.running
         drafts: list[ChapterDraft] = []
         for task in run.chapter_tasks:
-            node = nodes_by_id[task.node_id]
-            mapping, selected_sections, source_matches = map_chapter_sources(
-                project_id=project.id,
-                profile=project.project_profile,
-                toc_items=project.source_toc.items,
-                sections=project.sections,
-                node=node,
-                llm=self._structured_llm(),
-                artifacts=self.artifacts,
-            )
-            task.source_mapping = mapping
-            task.source_matches = source_matches
-            draft = generate_chapter(
-                project_id=project.id,
-                node=node,
-                task=task,
-                llm=self.llm,
-                artifacts=self.artifacts,
-                project_profile=project.project_profile,
-                selected_source_sections=selected_sections,
-                user_context=self._chapter_user_context(project.id, node.id),
-            )
-            self._record_chapter_version(project.id, node.id, draft, "ai_generate")
-            drafts.append(draft)
+            try:
+                node = nodes_by_id[task.node_id]
+                mapping, selected_sections, source_matches = map_chapter_sources(
+                    project_id=project.id,
+                    profile=project.project_profile,
+                    toc_items=project.source_toc.items,
+                    sections=project.sections,
+                    node=node,
+                    llm=self._structured_llm(),
+                    artifacts=self.artifacts,
+                )
+                task.source_mapping = mapping
+                task.source_matches = source_matches
+                draft = generate_chapter(
+                    project_id=project.id,
+                    node=node,
+                    task=task,
+                    llm=self.llm,
+                    artifacts=self.artifacts,
+                    project_profile=project.project_profile,
+                    selected_source_sections=selected_sections,
+                    user_context=self._chapter_user_context(project.id, node.id),
+                )
+                self._record_chapter_version(project.id, node.id, draft, "ai_generate")
+                drafts.append(draft)
+            except Exception as exc:
+                task.status = TaskStatus.failed
+                task.error_message = str(exc)
             run.logs.append(f"{task.status.value}: {task.title}")
         self._drafts[run.id] = drafts
         run.status = RunStatus.completed if all(task.status.value == "passed" for task in run.chapter_tasks) else RunStatus.partial_failed
@@ -203,6 +239,20 @@ class GenerationPipeline:
         return run
 
     def _ensure_generation_context(self, project: Project) -> Project:
+        project = self._ensure_base_context(project)
+        if project.outline_plan is None:
+            project.outline_plan = plan_template_outline(
+                project_id=project.id,
+                profile=project.project_profile,
+                toc_items=project.source_toc.items,
+                template_tree=project.template_tree,
+                llm=self._structured_llm(),
+                artifacts=self.artifacts,
+            )
+        project.template_tree = apply_outline_to_template_tree(project.template_tree, project.outline_plan)
+        return self.projects.save(project)
+
+    def _ensure_base_context(self, project: Project) -> Project:
         if project.template_tree is None:
             project = load_template_tree(project, template_id=project.template_id, loader=self.templates)
         if not project.sections:
@@ -217,16 +267,6 @@ class GenerationPipeline:
                 llm=self._structured_llm(),
                 artifacts=self.artifacts,
             )
-        if project.outline_plan is None:
-            project.outline_plan = plan_template_outline(
-                project_id=project.id,
-                profile=project.project_profile,
-                toc_items=project.source_toc.items,
-                template_tree=project.template_tree,
-                llm=self._structured_llm(),
-                artifacts=self.artifacts,
-            )
-        project.template_tree = apply_outline_to_template_tree(project.template_tree, project.outline_plan)
         return self.projects.save(project)
 
     def _effective_template_tree(self, project: Project) -> TemplateTree | None:

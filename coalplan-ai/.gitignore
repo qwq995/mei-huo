@@ -1,7 +1,9 @@
 .coalplan-data/
 .coalplan-data-smoke/
+.coalplan-directory-smoke/
 .coalplan-demo*/
 .coalplan-real-run*/
+.coalplan-deepseek-full*/
 src/coalplan/web/dist/
 src/coalplan/web/node_modules/
 src/coalplan/web/tsconfig.tsbuildinfo

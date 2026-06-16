@@ -18,6 +18,7 @@ import {
   listProjects,
   listTemplates,
   mergeProject,
+  proposeOutlineAIPlan,
   proposeChapterEdit,
   proposeOutlineChange,
   selectVersion,
@@ -57,6 +58,7 @@ export default function App() {
   const [attachmentDescription, setAttachmentDescription] = useState("");
   const [newNodeTitle, setNewNodeTitle] = useState("");
   const [outlineSuggestion, setOutlineSuggestion] = useState("");
+  const [outlineAIProposal, setOutlineAIProposal] = useState<AIProposal | null>(null);
   const [chapterSuggestion, setChapterSuggestion] = useState("");
   const [finalMarkdown, setFinalMarkdown] = useState("");
   const [busy, setBusy] = useState(false);
@@ -156,6 +158,7 @@ export default function App() {
       setOutlineNodes([]);
       setSelectedNodeId(null);
       setWorkspace(null);
+      setOutlineAIProposal(null);
       await refreshProjects(created.id);
       setNotice({ kind: "ok", text: `已创建项目：${created.name}` });
     });
@@ -170,6 +173,7 @@ export default function App() {
       setDirectory(null);
       setOutlineNodes([]);
       setWorkspace(null);
+      setOutlineAIProposal(null);
       await refreshProjects(updated.id);
       setNotice({ kind: "ok", text: `已上传并切分：${updated.section_count} 个来源章节` });
     });
@@ -184,7 +188,17 @@ export default function App() {
       const nodes = await listOutlineNodes(project.id);
       setOutlineNodes(nodes);
       setSelectedNodeId(nodes[0]?.node_id ?? null);
-      setNotice({ kind: "ok", text: `目录已生成：${nodes.length} 个可编辑节点` });
+      setNotice({ kind: data.warnings.length ? "warn" : "ok", text: data.warnings[0] ?? `基础目录已生成：${nodes.length} 个可编辑节点` });
+    });
+  }
+
+  async function handleAIPlanOutline() {
+    if (!project) return;
+    await run(async () => {
+      const proposal = await proposeOutlineAIPlan(project.id, outlineSuggestion.trim() || "请基于项目概况、投标目录和模板四模块优化项目目录。");
+      setOutlineAIProposal(proposal);
+      setOutlineSuggestion("");
+      setNotice({ kind: "ok", text: `AI 目录优化建议已生成：${proposal.id}，确认后才会应用` });
     });
   }
 
@@ -299,13 +313,15 @@ export default function App() {
   }
 
   async function handleApplyProposal(proposal: AIProposal) {
-    if (!project || !selectedNodeId) return;
+    if (!project) return;
     await run(async () => {
       if (proposal.target_type === "chapter") {
+        if (!selectedNodeId) return;
         await applyChapterProposal(project.id, selectedNodeId, proposal.id);
         await refreshWorkspace(project.id, selectedNodeId);
       } else {
         await applyOutlineProposal(project.id, proposal.id);
+        setOutlineAIProposal(null);
         await refreshDirectory(project.id);
       }
       setNotice({ kind: "ok", text: "修改建议已确认应用" });
@@ -377,6 +393,7 @@ export default function App() {
                 setOutlineNodes([]);
                 setWorkspace(null);
                 setSelectedNodeId(null);
+                setOutlineAIProposal(null);
               }}>
                 新建流程
               </button>
@@ -402,7 +419,7 @@ export default function App() {
             </label>
             <div className="button-row">
               <button disabled={!project || busy || (project.section_count ?? 0) === 0} onClick={() => void handleGenerateDirectory()}>
-                生成目录
+                生成基础目录
               </button>
               <button disabled={!project || busy} onClick={() => void refreshDirectory().catch(showError)}>
                 刷新
@@ -426,7 +443,7 @@ export default function App() {
         <section className="panel directory-panel">
           <div className="panel-heading">
             <h2>项目目录与来源</h2>
-            <span>{outlineNodes.length} 个节点</span>
+            <span>{outlineNodes.length} 个节点 · {directory?.outline_source ?? "template"}</span>
           </div>
           <div className="directory-layout">
             <div className="outline-list">
@@ -483,10 +500,20 @@ export default function App() {
                     <button disabled={busy || !newNodeTitle.trim()} onClick={() => void handleCreateNode(selectedNode.parent_id ?? null)}>加同级</button>
                   </div>
                   <label className="field compact-field">
-                    <span>让 AI 给目录修改建议</span>
+                    <span>让 AI 优化目录</span>
                     <textarea value={outlineSuggestion} onChange={(event) => setOutlineSuggestion(event.target.value)} placeholder="例如：把安全文明施工拆成安全管理、环保水保、应急处置三个小节" />
                   </label>
-                  <button disabled={busy || !outlineSuggestion.trim()} onClick={() => void handleOutlineProposal()}>生成目录建议预览</button>
+                  <div className="button-row no-pad">
+                    <button disabled={!project || busy} onClick={() => void handleAIPlanOutline()}>AI 优化目录</button>
+                    <button disabled={busy || !outlineSuggestion.trim()} onClick={() => void handleOutlineProposal()}>普通建议预览</button>
+                  </div>
+                  {outlineAIProposal ? (
+                    <article className="inline-proposal">
+                      <strong>AI 目录建议 · {outlineAIProposal.status}</strong>
+                      <p>{outlineAIProposal.suggestion}</p>
+                      <button disabled={busy} onClick={() => void handleApplyProposal(outlineAIProposal)}>应用 AI 目录建议</button>
+                    </article>
+                  ) : null}
                 </>
               ) : (
                 <p className="empty-text">选择一个目录节点后，可编辑四模块、排序、启停和新增子章节。</p>

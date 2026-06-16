@@ -16,6 +16,10 @@ def merge_chapters(
     title: str,
     artifacts: ArtifactRepository,
 ) -> GenerationRun:
+    draft_node_ids = {draft.node_id for draft in drafts}
+    for task in run.chapter_tasks:
+        if task.node_id in draft_node_ids:
+            task.status = TaskStatus.passed
     failed = [task for task in run.chapter_tasks if task.status != TaskStatus.passed]
     if failed:
         run.status = RunStatus.partial_failed

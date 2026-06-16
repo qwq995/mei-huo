@@ -61,6 +61,16 @@ def propose_outline_change(project_id: str, payload: OutlineAIProposalRequest, r
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.post("/projects/{project_id}/outline/ai-plan")
+def propose_ai_outline_plan(project_id: str, payload: OutlineAIProposalRequest, request: Request):
+    try:
+        return request.app.state.pipeline.propose_ai_outline(project_id, payload.suggestion)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/projects/{project_id}/outline/proposals/{proposal_id}/apply")
 def apply_outline_proposal(project_id: str, proposal_id: str, request: Request):
     try:

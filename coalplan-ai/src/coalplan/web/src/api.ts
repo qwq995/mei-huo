@@ -117,6 +117,10 @@ export type DirectoryResponse = {
   source_toc?: { items: SourceTocItem[]; artifact_json_path?: string | null; artifact_markdown_path?: string | null } | null;
   outline?: { outline: unknown; artifact_json_path?: string | null; artifact_markdown_path?: string | null } | null;
   chapter_tasks: ChapterTask[];
+  profile_status: string;
+  outline_status: string;
+  outline_source: string;
+  warnings: string[];
 };
 
 export type RunResponse = {
@@ -163,6 +167,7 @@ export const createOutlineNode = (projectId: string, payload: Partial<OutlineNod
 export const updateOutlineNode = (projectId: string, nodeId: string, payload: Partial<OutlineNode>) => request<OutlineNode>(`/projects/${projectId}/outline-nodes/${nodeId}`, { method: "PATCH", body: JSON.stringify(payload) });
 export const deleteOutlineNode = (projectId: string, nodeId: string) => request<{ deleted: boolean }>(`/projects/${projectId}/outline-nodes/${nodeId}`, { method: "DELETE" });
 export const proposeOutlineChange = (projectId: string, suggestion: string, preview?: Record<string, unknown>) => request<AIProposal>(`/projects/${projectId}/outline/propose-ai-change`, { method: "POST", body: JSON.stringify({ suggestion, preview }) });
+export const proposeOutlineAIPlan = (projectId: string, suggestion: string) => request<AIProposal>(`/projects/${projectId}/outline/ai-plan`, { method: "POST", body: JSON.stringify({ suggestion }) });
 export const applyOutlineProposal = (projectId: string, proposalId: string) => request<AIProposal>(`/projects/${projectId}/outline/proposals/${proposalId}/apply`, { method: "POST" });
 export const getWorkspace = (projectId: string, nodeId: string) => request<ChapterWorkspace>(`/projects/${projectId}/chapters/${nodeId}/workspace`);
 export const addSupplement = (projectId: string, nodeId: string, payload: Partial<ChapterSupplement>) => request<ChapterSupplement>(`/projects/${projectId}/chapters/${nodeId}/supplements`, { method: "POST", body: JSON.stringify(payload) });
