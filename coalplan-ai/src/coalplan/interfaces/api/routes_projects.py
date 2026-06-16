@@ -46,6 +46,21 @@ def get_project(project_id: str, request: Request):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.delete("/projects/{project_id}")
+def delete_project(project_id: str, request: Request, keep_artifacts: bool = True):
+    pipeline = request.app.state.pipeline
+    try:
+        if hasattr(pipeline.projects, "delete"):
+            pipeline.projects.delete(project_id)
+        else:
+            raise ValueError("Configured project repository does not support deletion.")
+        return {"deleted": True, "keep_artifacts": keep_artifacts}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/projects/{project_id}/bid-markdown", response_model=ProjectSummaryResponse)
 def upload_bid_markdown(project_id: str, payload: BidMarkdownUploadRequest, request: Request):
     pipeline = request.app.state.pipeline

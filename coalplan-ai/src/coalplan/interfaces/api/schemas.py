@@ -17,6 +17,58 @@ class BidMarkdownUploadRequest(BaseModel):
     content: str
 
 
+class OutlineNodeCreateRequest(BaseModel):
+    title: str
+    parent_id: str | None = None
+    level: int = 3
+    sort_order: int | None = None
+    enabled: bool = True
+    source_rules: list[str] = Field(default_factory=list)
+    auto_fill: list[str] = Field(default_factory=list)
+    manual_fill: list[str] = Field(default_factory=list)
+    special_notes: list[str] = Field(default_factory=list)
+
+
+class OutlineNodeUpdateRequest(BaseModel):
+    title: str | None = None
+    parent_id: str | None = None
+    level: int | None = None
+    sort_order: int | None = None
+    enabled: bool | None = None
+    source_rules: list[str] | None = None
+    auto_fill: list[str] | None = None
+    manual_fill: list[str] | None = None
+    special_notes: list[str] | None = None
+
+
+class SupplementRequest(BaseModel):
+    kind: str = "text"
+    title: str = ""
+    content: str = ""
+    must_include: bool = False
+    sort_order: int | None = None
+
+
+class ManualVersionRequest(BaseModel):
+    title: str
+    markdown: str
+    select: bool = True
+
+
+class SelectVersionRequest(BaseModel):
+    version_id: str
+
+
+class AIEditProposalRequest(BaseModel):
+    suggestion: str
+    base_markdown: str | None = None
+
+
+class OutlineAIProposalRequest(BaseModel):
+    suggestion: str
+    preview_nodes: list[dict] | None = None
+
+
 class ProjectSummaryResponse(BaseModel):
     id: str
     project_id: str
@@ -45,6 +97,7 @@ class ChapterResponse(BaseModel):
     markdown: str = ""
     draft_path: str | None = None
     source_matches: list[dict] = Field(default_factory=list)
+    version: dict | None = None
 
 
 class TemplateSummaryResponse(BaseModel):

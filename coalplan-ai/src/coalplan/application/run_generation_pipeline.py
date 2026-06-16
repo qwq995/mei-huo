@@ -12,7 +12,7 @@ from coalplan.application.plan_template_outline import apply_outline_to_template
 from coalplan.application.serialization import dump_model, to_json_text
 from coalplan.domain.enums import RunStatus
 from coalplan.domain.generation import ChapterDraft, ChapterTask, GenerationRun, Project
-from coalplan.domain.templates import TemplateNode, iter_template_nodes
+from coalplan.domain.templates import TemplateNode, TemplateTree, iter_template_nodes
 from coalplan.ports.llm import LLMClient, StructuredLLMClient
 from coalplan.ports.markdown_parser import MarkdownParser
 from coalplan.ports.repository import ArtifactRepository, ProjectRepository
@@ -31,6 +31,7 @@ class GenerationPipeline:
         retriever: SourceRetriever,
         llm: LLMClient,
         structured_llm: StructuredLLMClient | None = None,
+        workspace_store=None,
     ) -> None:
         self.projects = projects
         self.artifacts = artifacts
@@ -39,6 +40,7 @@ class GenerationPipeline:
         self.retriever = retriever
         self.llm = llm
         self.structured_llm = structured_llm
+        self.workspace_store = workspace_store
         self._drafts: dict[str, list[ChapterDraft]] = {}
 
     def create_project(self, name: str, template_id: str = "coal_fire") -> Project:
@@ -64,6 +66,7 @@ class GenerationPipeline:
     def prepare_directory(self, project_id: str) -> Project:
         project = self.projects.get(project_id)
         project = self._ensure_generation_context(project)
+        project.template_tree = self._effective_template_tree(project)
         if not project.runs:
             run = GenerationRun(project_name=project.name, template_id=project.template_id)
             if project.template_tree is None:
@@ -77,6 +80,7 @@ class GenerationPipeline:
     def prepare_run(self, project_id: str) -> GenerationRun:
         project = self.projects.get(project_id)
         project = self._ensure_generation_context(project)
+        project.template_tree = self._effective_template_tree(project)
         if project.template_tree is None:
             raise ValueError("Project template tree is not loaded.")
         run = GenerationRun(project_name=project.name, template_id=project.template_id)
@@ -92,6 +96,7 @@ class GenerationPipeline:
         run = project.runs[-1] if project.runs else self.prepare_run(project_id)
         project = self.projects.get(project_id)
         project = self._ensure_generation_context(project)
+        project.template_tree = self._effective_template_tree(project)
         run = project.runs[-1] if project.runs else run
         if project.template_tree is None or project.project_profile is None or project.source_toc is None:
             raise ValueError("Project generation context is incomplete.")
@@ -119,7 +124,9 @@ class GenerationPipeline:
                 artifacts=self.artifacts,
                 project_profile=project.project_profile,
                 selected_source_sections=selected_sections,
+                user_context=self._chapter_user_context(project.id, node.id),
             )
+            self._record_chapter_version(project.id, node.id, draft, "ai_generate")
             drafts.append(draft)
             run.logs.append(f"{task.status.value}: {task.title}")
         self._drafts[run.id] = drafts
@@ -133,6 +140,7 @@ class GenerationPipeline:
         run = project.runs[-1] if project.runs else self.prepare_run(project_id)
         project = self.projects.get(project_id)
         project = self._ensure_generation_context(project)
+        project.template_tree = self._effective_template_tree(project)
         run = project.runs[-1] if project.runs else run
         if project.template_tree is None or project.project_profile is None or project.source_toc is None:
             raise ValueError("Project generation context is incomplete.")
@@ -162,7 +170,9 @@ class GenerationPipeline:
             artifacts=self.artifacts,
             project_profile=project.project_profile,
             selected_source_sections=selected_sections,
+            user_context=self._chapter_user_context(project.id, node.id),
         )
+        self._record_chapter_version(project.id, node.id, draft, "ai_generate")
         self._drafts.setdefault(run.id, []).append(draft)
         self._persist_validation(project.id, run)
         self.projects.save(project)
@@ -174,8 +184,11 @@ class GenerationPipeline:
             raise KeyError("Project has no generation run.")
         if project.template_tree is None:
             raise ValueError("Project template tree is not loaded.")
+        project.template_tree = self._effective_template_tree(project)
         run = project.runs[-1]
-        drafts = self._drafts.get(run.id)
+        drafts = self._selected_version_drafts(project)
+        if not drafts:
+            drafts = self._drafts.get(run.id)
         if drafts is None:
             drafts = _load_drafts_from_tasks(project.id, run, self.artifacts)
         run = merge_chapters(
@@ -216,12 +229,78 @@ class GenerationPipeline:
         project.template_tree = apply_outline_to_template_tree(project.template_tree, project.outline_plan)
         return self.projects.save(project)
 
+    def _effective_template_tree(self, project: Project) -> TemplateTree | None:
+        if self.workspace_store is None or project.template_tree is None:
+            return project.template_tree
+        try:
+            nodes = self.workspace_store.outline_tree(project.id)
+            if nodes:
+                return TemplateTree(id=project.template_tree.id, name=project.template_tree.name, nodes=nodes)
+        except Exception:
+            return project.template_tree
+        return project.template_tree
+
     def _structured_llm(self) -> StructuredLLMClient:
         if self.structured_llm is not None:
             return self.structured_llm
         if not hasattr(self.llm, "complete_json"):
             raise TypeError("Configured LLM client must implement complete_json for structured generation stages.")
         return self.llm  # type: ignore[return-value]
+
+    def _chapter_user_context(self, project_id: str, node_id: str) -> str:
+        if self.workspace_store is None:
+            return ""
+        try:
+            return self.workspace_store.render_chapter_context(project_id, node_id)
+        except Exception:
+            return ""
+
+    def _record_chapter_version(self, project_id: str, node_id: str, draft: ChapterDraft, source_type: str) -> None:
+        if self.workspace_store is None or draft.validation_status.value != "passed":
+            return
+        try:
+            workspace = self.workspace_store.get_workspace(project_id, node_id)
+            supplement_ids = [item["id"] for item in workspace.get("supplements", [])]
+            self.workspace_store.create_chapter_version(
+                project_id,
+                node_id,
+                title=draft.title,
+                markdown=draft.markdown,
+                artifact_path=draft.artifact_path,
+                source_type=source_type,
+                source_section_ids=draft.source_section_ids,
+                supplement_ids=supplement_ids,
+                created_by="ai",
+                select=True,
+            )
+        except Exception as exc:
+            # Versioning should not make the generation endpoint fail after a valid draft was produced.
+            pass
+
+    def _selected_version_drafts(self, project: Project) -> list[ChapterDraft]:
+        if self.workspace_store is None:
+            return []
+        drafts: list[ChapterDraft] = []
+        try:
+            for node in iter_template_nodes(project.template_tree.nodes if project.template_tree else []):
+                workspace = self.workspace_store.get_workspace(project.id, node.id)
+                selected_id = workspace.get("selected_version_id")
+                if not selected_id:
+                    continue
+                version = self.workspace_store.get_version(project.id, node.id, selected_id)
+                drafts.append(
+                    ChapterDraft(
+                        node_id=node.id,
+                        title=version["title"],
+                        markdown=version["markdown"],
+                        source_section_ids=version.get("source_section_ids", []),
+                        validation_status=TaskStatus.passed,
+                        artifact_path=version.get("artifact_path"),
+                    )
+                )
+        except Exception:
+            return []
+        return drafts
 
     def _persist_validation(self, project_id: str, run: GenerationRun) -> None:
         self.artifacts.write_text(project_id, f"runs/{run.id}/validation.json", to_json_text(_validation_payload(run)))

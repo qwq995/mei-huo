@@ -24,6 +24,7 @@ def generate_chapter(
     artifacts: ArtifactRepository,
     project_profile: ProjectProfile | None = None,
     selected_source_sections: list[MarkdownSection] | None = None,
+    user_context: str = "",
 ) -> ChapterDraft:
     task.status = TaskStatus.running
     prompt = build_chapter_prompt(
@@ -31,6 +32,7 @@ def generate_chapter(
         task=task,
         project_profile=project_profile,
         selected_source_sections=selected_source_sections or [],
+        user_context=user_context,
     )
     markdown = llm.complete(prompt)
     draft = ChapterDraft(
@@ -63,6 +65,7 @@ def build_chapter_prompt(
     task: ChapterTask,
     project_profile: ProjectProfile | None,
     selected_source_sections: list[MarkdownSection],
+    user_context: str = "",
 ) -> str:
     source_lines = [
         f"- section_id: {match.section_id}；标题路径：{' > '.join(match.title_path)}；摘要：{match.snippet}"
@@ -98,6 +101,9 @@ def build_chapter_prompt(
             "",
             "## 已确认来源章节全文",
             _render_full_source_sections(selected_source_sections),
+            "",
+            "## 本章用户补充材料与历史版本",
+            user_context or "无。",
             "",
             "任务：",
             "生成当前小章节的施工组织设计正文。正文应尽量具体，必须使用来源章节中的项目名称、工程范围、工程量、施工条件、工艺方法、质量安全环保要求等真实内容。",
