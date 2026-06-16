@@ -7,24 +7,27 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from coalplan.application.run_generation_pipeline import GenerationPipeline
+from coalplan.application.workspace_store import WorkspaceStore
+from coalplan.infrastructure.database.repository import DatabaseProjectRepository
+from coalplan.infrastructure.database.session import create_session_factory, init_database, sqlite_url_for_storage
 from coalplan.infrastructure.llm.fake_llm import FakeLLMClient
 from coalplan.infrastructure.llm.openai_compatible import OpenAICompatibleLLMClient
 from coalplan.infrastructure.llm.source_driven_simulated import SourceDrivenSimulatedLLMClient
 from coalplan.infrastructure.markdown.parser import MarkdownDocumentParser
 from coalplan.infrastructure.retrieval.keyword_retriever import KeywordSourceRetriever
 from coalplan.infrastructure.storage.local_artifact_repository import LocalArtifactRepository
-from coalplan.infrastructure.storage.local_project_repository import LocalProjectRepository
 from coalplan.infrastructure.templates.markdown_template_loader import MarkdownTemplateLoader
 from coalplan.interfaces.api.routes_artifacts import router as artifacts_router
 from coalplan.interfaces.api.routes_generation import router as generation_router
 from coalplan.interfaces.api.routes_projects import router as projects_router
 from coalplan.interfaces.api.routes_templates import router as templates_router
+from coalplan.interfaces.api.routes_workspace import router as workspace_router
 from coalplan.settings import Settings, get_settings
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
-    app = FastAPI(title="CoalPlan AI 火区治理施组生成原型", version="0.1.0")
+    app = FastAPI(title="CoalPlan AI 施工组织设计生成工作台", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -33,10 +36,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
     app.state.pipeline = build_pipeline(settings)
+    app.state.workspace_store = app.state.pipeline.workspace_store
     app.include_router(projects_router)
     app.include_router(templates_router)
     app.include_router(generation_router)
     app.include_router(artifacts_router)
+    app.include_router(workspace_router)
     return app
 
 
@@ -45,16 +50,22 @@ def build_pipeline(settings: Settings) -> GenerationPipeline:
     storage_root = settings.storage_dir
     if not storage_root.is_absolute():
         storage_root = Path.cwd() / storage_root
+    database_url = settings.database_url or sqlite_url_for_storage(storage_root)
+    session_factory = create_session_factory(database_url)
+    init_database(session_factory)
+    artifacts = LocalArtifactRepository(storage_root / "artifacts")
+    workspace_store = WorkspaceStore(session_factory, artifacts)
     llm = _build_llm(settings.llm_provider, settings)
     structured_llm = _build_llm(settings.structured_llm_provider, settings) if settings.structured_llm_provider else None
     return GenerationPipeline(
-        projects=LocalProjectRepository(storage_root / "projects"),
-        artifacts=LocalArtifactRepository(storage_root / "artifacts"),
+        projects=DatabaseProjectRepository(session_factory),
+        artifacts=artifacts,
         parser=MarkdownDocumentParser(),
         templates=MarkdownTemplateLoader(package_root / "assets" / "templates"),
         retriever=KeywordSourceRetriever(),
         llm=llm,
         structured_llm=structured_llm,
+        workspace_store=workspace_store,
     )
 
 

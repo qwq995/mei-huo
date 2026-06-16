@@ -6,6 +6,9 @@ requires-python = ">=3.10"
 dependencies = [
   "fastapi",
   "pydantic",
+  "sqlalchemy",
+  "alembic",
+  "python-multipart",
   "uvicorn",
 ]
 
@@ -14,4 +17,3 @@ dev = []
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
-

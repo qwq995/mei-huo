@@ -25,6 +25,11 @@ python -m coalplan.main
 
 API 文档默认在 `http://127.0.0.1:8010/docs`。
 
+更完整的接口与工作台使用说明见：
+
+- `docs/api-workbench.md`
+- `docs/run-with-deepseek.md`
+
 ## Run Web
 
 ```powershell

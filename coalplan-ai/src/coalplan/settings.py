@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 class Settings(BaseModel):
     storage_dir: Path = Path(os.getenv("COALPLAN_STORAGE_DIR", ".coalplan-data"))
+    database_url: str | None = os.getenv("COALPLAN_DATABASE_URL")
     template_id: str = os.getenv("COALPLAN_TEMPLATE_ID", "coal_fire")
     llm_provider: str = os.getenv("COALPLAN_LLM_PROVIDER", "fake")
     structured_llm_provider: str | None = os.getenv("COALPLAN_STRUCTURED_LLM_PROVIDER")

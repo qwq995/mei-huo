@@ -1,4 +1,5 @@
 .coalplan-data/
+.coalplan-data-smoke/
 .coalplan-demo*/
 .coalplan-real-run*/
 src/coalplan/web/dist/

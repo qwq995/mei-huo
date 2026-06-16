@@ -56,6 +56,7 @@ def generate_chapter(project_id: str, node_id: str, request: Request):
             markdown=draft.markdown,
             draft_path=draft.artifact_path,
             source_matches=[_dump(match) for match in task.source_matches] if task else [],
+            version=_selected_version(request, project_id, node_id),
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -73,10 +74,15 @@ def get_chapter(project_id: str, node_id: str, request: Request):
         task = next((item for item in project.runs[-1].chapter_tasks if item.node_id == node_id), None)
         if task is None:
             raise KeyError(f"Unknown node_id: {node_id}")
+        version = _selected_version(request, project_id, node_id)
         path = None
-        if task.draft_id:
+        markdown = ""
+        if version:
+            markdown = version.get("markdown", "")
+            path = version.get("artifact_path")
+        elif task.draft_id:
             path = str(pipeline.artifacts.root / project_id / "chapters" / f"{node_id}.md")
-        markdown = pipeline.artifacts.read_text(path) if path else ""
+            markdown = pipeline.artifacts.read_text(path)
         return ChapterResponse(
             node_id=task.node_id,
             title=task.title,
@@ -84,6 +90,7 @@ def get_chapter(project_id: str, node_id: str, request: Request):
             markdown=markdown,
             draft_path=path,
             source_matches=[_dump(match) for match in task.source_matches],
+            version=version,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -105,3 +112,17 @@ def _dump(model) -> dict:
     if hasattr(model, "model_dump"):
         return model.model_dump(mode="json")
     return model.dict()
+
+
+def _selected_version(request: Request, project_id: str, node_id: str) -> dict | None:
+    store = getattr(request.app.state, "workspace_store", None)
+    if store is None:
+        return None
+    try:
+        workspace = store.get_workspace(project_id, node_id)
+        selected_id = workspace.get("selected_version_id")
+        if not selected_id:
+            return None
+        return store.get_version(project_id, node_id, selected_id)
+    except Exception:
+        return None
