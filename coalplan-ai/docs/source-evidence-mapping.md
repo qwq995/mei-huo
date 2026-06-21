@@ -2,7 +2,7 @@
 
 ## 目标
 
-生成施工组织设计小章节时，LLM 不能只知道“相关章节是哪几个”，还要知道“模板中的哪些要求对应投标文档中的哪些原文段落”。本方案将来源链路拆成两层：
+生成施工组织设计小章节时，LLM 不能只知道“相关章节是哪几个”，还要知道“模板要求对应投标文档中的哪些原文段落”。本方案把来源链路拆成两层：
 
 1. 章节级来源映射：由结构化 LLM 从投标目录中选择相关 `section_id`。
 2. 文段级证据映射：由后端从已选章节全文中切出段落、表格块和列表块，按模板标题与四模块关键词打分，形成可追溯 evidence map。
@@ -14,11 +14,12 @@
 - 已匹配来源章节摘要。
 - 原文文段映射表。
 - 已确认来源章节全文。
-- 用户补充材料、附件说明、当前选中历史版本。
+- 用户补充材料、附件说明和当前选中历史版本。
+- 当前目录节点的目标字数。
 
 ## 数据结构
 
-`SourceMappingResult` 增强后包含：
+增强后的 `SourceMappingResult` 包含：
 
 - `matches`：章节级匹配结果。
 - `matches[].evidence_ids`：该章节下被选中的证据文段 ID。
@@ -41,26 +42,45 @@
 - `reason`
 - `confidence`
 
+生成后的 `GeneratedContentTree` 包含：
+
+- `version_id`
+- `node_id`
+- `title`
+- `markdown_line_count`
+- `nodes[]`
+  - `id`
+  - `title`
+  - `level`
+  - `title_path`
+  - `start_line`
+  - `end_line`
+  - `markdown`
+  - `body`
+  - `source_links`
+  - `children`
+
 ## 处理流程
 
 1. `map_chapter_sources` 调用结构化 LLM，只选择相关来源章节。
 2. `_clean_mapping` 清理不存在的 `section_id`、重复匹配和置信度范围。
-3. `source_evidence.build_source_evidence` 对已选章节做文段切片：
+3. 如果 LLM 返回异常或无可靠结果，后端使用关键词匹配兜底，保证章节仍可进入生成流程。
+4. `source_evidence.build_source_evidence` 对已选章节做文段切片：
    - 空行分段。
    - Markdown 表格连续行作为一个块。
    - 列表连续行作为一个块。
    - 超长段落按句号、分号等断句。
-4. 后端按当前模板节点打分：
+5. 后端按当前模板节点打分：
    - 节点标题。
    - `[主要来源]`。
    - `[自动补充]`。
    - `[人工补充需补充]`。
    - `[特殊备注]`。
-5. 每个来源章节保留若干高分 evidence，回填 `evidence_ids`。
-6. 写入：
+6. 每个来源章节保留若干高分 evidence，回填 `evidence_ids`。
+7. 写入：
    - `mapping/{node_id}.json`
    - `mapping/{node_id}.evidence.md`
-7. `generate_chapter.build_chapter_prompt` 将“原文文段映射表”置于全文来源之前，要求 LLM 优先依据 evidence map 生成。
+8. `generate_chapter.build_chapter_prompt` 将“原文文段映射表”置于全文来源之前，要求 LLM 优先依据 evidence map 组织正文。
 
 ## Prompt 约束
 
@@ -69,9 +89,10 @@
 - 优先依据“原文文段映射表”组织正文。
 - 涉及项目事实、工程量、工艺参数、质量安全要求时，应从 `evidence_id` 对应原文摘录中取材。
 - `## 主要来源摘要` 中优先写出 `evidence_id`、`section_id`、标题路径和依据摘要。
-- 不能确定的信息必须保留 `【需人工补充：...】`。
+- 不确定的信息必须保留 `【需人工补充：...】`。
+- 目标字数只用于控制详略，不得为了满足字数而编造事实。
 
-修复 prompt 也带入同一份 evidence map，避免格式修复阶段丢失来源约束。
+格式修复 prompt 也带入同一份 evidence map，避免修复阶段丢失来源约束。
 
 ## 接口与追溯
 
@@ -80,16 +101,31 @@
 - `source_matches`：章节级摘要。
 - `source_mapping.matches`：章节级结构化匹配。
 - `source_mapping.evidence`：文段级证据。
+- `version.content_tree`：生成后版本内的正文目录树；树节点会按显式 `evidence_id / section_id` 或关键词回退匹配到文段级证据。
 
 本地 artifact：
 
 - `mapping/{node_id}.json`：机器可读完整映射。
 - `mapping/{node_id}.evidence.md`：人工可读证据表。
+- `chapters/{node_id}/versions/{version_id}.content_tree.json`：版本正文目录树，支持生成后继续按小节追溯、查看和编辑。
 - `runs/{run_id}/validation.json`：包含 `evidence_count` 和 `evidence_artifact_path`。
+
+## 生成后小节管理
+
+每次 AI 生成、人工保存或应用修改建议形成新版本时，后端都会从版本 Markdown 标题解析出 `GeneratedContentTree`。这个树用于把“已经生成的正文”继续按目录树管理，而不是只保存整章大段文本。
+
+树节点能力：
+
+- 保留小节标题、层级、标题路径、行号范围和原始 Markdown。
+- 从正文中的 `evidence_id`、`section_id` 直接建立来源链接。
+- 当正文没有显式写出证据 ID 时，使用标题与正文关键词回退匹配本章 `source_mapping.evidence`。
+- 支持通过 `PATCH /projects/{project_id}/chapters/{node_id}/versions/{version_id}/content-nodes/{content_node_id}` 只替换某个正文小节，并保存为新的 `subsection_edit` 版本。
+
+这样用户可以在单章生成后继续拆到更细的小节做来源核查、局部修改和多版本选择；最终合并仍只读取每个章节的 `selected_version_id`。
 
 ## 后续增强
 
-- 将 evidence map 在前端章节工作区中做可折叠展示。
-- 支持用户手动锁定/排除某条 evidence。
-- 真实 LLM 来源映射阶段可先返回候选 section，再由后端 evidence 评分控制实际 prompt 内容，减少模型幻觉。
+- 在前端章节工作区中把 evidence map 和生成正文目录树做可折叠联动展示。
+- 支持用户手动锁定或排除某条 evidence。
+- 真实 LLM 来源映射阶段可以只返回候选 section，再由后端 evidence 评分控制实际 prompt 内容，减少模型幻觉。
 - 后续接入向量检索时，仍保留本 evidence 数据结构，只替换候选段落评分器。

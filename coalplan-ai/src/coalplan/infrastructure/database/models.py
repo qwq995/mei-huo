@@ -82,6 +82,7 @@ class ProjectOutlineNodeRecord(Base):
     auto_fill_json: Mapped[str] = mapped_column(Text, nullable=False)
     manual_fill_json: Mapped[str] = mapped_column(Text, nullable=False)
     special_notes_json: Mapped[str] = mapped_column(Text, nullable=False)
+    target_word_count: Mapped[int | None] = mapped_column(Integer)
     selected_version_id: Mapped[str | None] = mapped_column(Text, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)

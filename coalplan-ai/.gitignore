@@ -1,5 +1,6 @@
 .coalplan-data/
 .coalplan-data-smoke/
+.coalplan-dev/
 .coalplan-directory-smoke/
 .coalplan-demo*/
 .coalplan-real-run*/

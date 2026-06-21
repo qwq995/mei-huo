@@ -40,6 +40,7 @@ def generate_chapter(
         title=node.title,
         markdown=markdown,
         source_section_ids=[match.section_id for match in task.source_matches],
+        source_mapping=task.source_mapping,
         missing_items=node.manual_fill,
     )
     draft = validate_chapter(draft, expected_title=node.title, source_count=len(task.source_matches))
@@ -67,6 +68,7 @@ def build_chapter_prompt(
     selected_source_sections: list[MarkdownSection],
     user_context: str = "",
 ) -> str:
+    word_count_instruction = _word_count_instruction(task.target_word_count)
     source_lines = [
         f"- section_id: {match.section_id}；标题路径：{' > '.join(match.title_path)}；摘要：{match.snippet}"
         for match in task.source_matches
@@ -84,6 +86,9 @@ def build_chapter_prompt(
             to_json_text(dump_model(node)),
             "",
             f"当前小章节标题：{node.title}",
+            "",
+            "## 本章目标字数",
+            word_count_instruction,
             "",
             "## 模板主要来源",
             *[f"- {item}" for item in node.source_rules],
@@ -128,6 +133,7 @@ def build_chapter_prompt(
             "- “主要来源摘要”必须列出来源章节 section_id、标题路径和依据摘要。",
             "- “主要来源摘要”中优先写出 evidence_id、section_id、标题路径和依据摘要，便于追溯每个小章节对应的原文段落。",
             "- “生成正文”必须是可直接进入施工组织设计的小章节正文，不要写“系统依据”“可整理为”等流程说明。",
+            "- 应围绕目标字数控制详略：有可靠来源时展开工艺、工程量、组织和控制措施；来源不足时用人工补充占位，不得为了达到字数编造事实。",
             "- 优先写成完整段落；需要表达工程量、范围、工艺、控制目标时可使用表格或条列。",
             "- 所有数字、单位、工程量和专有名词必须来自来源章节；不能确定的写为 `【需人工补充：...】`。",
             "- 不得新增大章节，不得输出模板外模块名。",
@@ -141,6 +147,9 @@ def build_repair_prompt(*, node: TemplateNode, task: ChapterTask, bad_markdown: 
             "你是 Markdown 格式修复 agent。你只修复格式，不新增事实。",
             "",
             f"期望标题：{node.title}",
+            "",
+            "本章目标字数：",
+            _word_count_instruction(task.target_word_count),
             "",
             "必须保留的人工补充项：",
             *[f"- {item}" for item in node.manual_fill],
@@ -222,3 +231,11 @@ def _render_source_evidence(task: ChapterTask) -> str:
             ]
         )
     return "\n".join(lines).strip()
+
+
+def _word_count_instruction(target_word_count: int | None) -> str:
+    if not target_word_count:
+        return "未设置固定目标字数；请按来源材料详略自然展开，避免空泛。"
+    lower = max(150, int(target_word_count * 0.85))
+    upper = int(target_word_count * 1.2)
+    return f"目标约 {target_word_count} 字，允许约 {lower}-{upper} 字范围内浮动；不得为了凑字数编造来源未支持的信息。"

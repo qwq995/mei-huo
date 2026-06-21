@@ -27,6 +27,7 @@ class OutlineNodeCreateRequest(BaseModel):
     auto_fill: list[str] = Field(default_factory=list)
     manual_fill: list[str] = Field(default_factory=list)
     special_notes: list[str] = Field(default_factory=list)
+    target_word_count: int | None = None
 
 
 class OutlineNodeUpdateRequest(BaseModel):
@@ -39,6 +40,7 @@ class OutlineNodeUpdateRequest(BaseModel):
     auto_fill: list[str] | None = None
     manual_fill: list[str] | None = None
     special_notes: list[str] | None = None
+    target_word_count: int | None = None
 
 
 class SupplementRequest(BaseModel):
@@ -55,6 +57,11 @@ class ManualVersionRequest(BaseModel):
     select: bool = True
 
 
+class ContentNodeUpdateRequest(BaseModel):
+    markdown: str
+    select: bool = True
+
+
 class SelectVersionRequest(BaseModel):
     version_id: str
 
@@ -67,6 +74,10 @@ class AIEditProposalRequest(BaseModel):
 class OutlineAIProposalRequest(BaseModel):
     suggestion: str
     preview_nodes: list[dict] | None = None
+
+
+class WordCountEstimateRequest(BaseModel):
+    reference_markdown: str | None = None
 
 
 class ProjectSummaryResponse(BaseModel):

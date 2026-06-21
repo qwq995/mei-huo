@@ -150,6 +150,7 @@ def _sync_outline_nodes(session, project: Project) -> None:
                 auto_fill_json=_json(node.auto_fill),
                 manual_fill_json=_json(node.manual_fill),
                 special_notes_json=_json(node.special_notes),
+                target_word_count=node.target_word_count,
             )
         )
 

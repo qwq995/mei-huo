@@ -31,6 +31,7 @@ def list_chapters(project_id: str, request: Request):
             {
                 "node_id": task.node_id,
                 "title": task.title,
+                "target_word_count": task.target_word_count,
                 "status": task.status.value,
                 "source_matches": [_dump(match) for match in task.source_matches],
                 "source_mapping": _dump(task.source_mapping) if task.source_mapping else None,

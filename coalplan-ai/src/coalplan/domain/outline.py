@@ -13,6 +13,7 @@ class TemplateOutlineNode(BaseModel):
     auto_fill: list[str] = Field(default_factory=list)
     manual_fill: list[str] = Field(default_factory=list)
     special_notes: list[str] = Field(default_factory=list)
+    target_word_count: int | None = None
 
 
 class TemplateOutlinePlan(BaseModel):

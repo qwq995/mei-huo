@@ -13,6 +13,7 @@ class TemplateNode(BaseModel):
     auto_fill: list[str] = Field(default_factory=list)
     manual_fill: list[str] = Field(default_factory=list)
     special_notes: list[str] = Field(default_factory=list)
+    target_word_count: int | None = None
     children: list["TemplateNode"] = Field(default_factory=list)
 
     @property
@@ -36,4 +37,3 @@ def iter_template_nodes(nodes: list[TemplateNode]) -> list[TemplateNode]:
         flat.append(node)
         flat.extend(iter_template_nodes(node.children))
     return flat
-

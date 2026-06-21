@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.pool import NullPool
 from sqlalchemy.orm import sessionmaker
 
@@ -25,3 +25,16 @@ def create_session_factory(database_url: str):
 def init_database(session_factory) -> None:
     engine = session_factory.kw["bind"]
     Base.metadata.create_all(engine)
+    _ensure_lightweight_sqlite_migrations(engine)
+
+
+def _ensure_lightweight_sqlite_migrations(engine) -> None:
+    if engine.dialect.name != "sqlite":
+        return
+    inspector = inspect(engine)
+    if "project_outline_nodes" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("project_outline_nodes")}
+    with engine.begin() as connection:
+        if "target_word_count" not in columns:
+            connection.execute(text("ALTER TABLE project_outline_nodes ADD COLUMN target_word_count INTEGER"))

@@ -10,6 +10,7 @@ export type TemplateNode = {
   auto_fill: string[];
   manual_fill: string[];
   special_notes: string[];
+  target_word_count?: number | null;
   selected_version_id?: string | null;
   children: TemplateNode[];
 };
@@ -81,9 +82,41 @@ export type SourceMappingResult = {
   evidence_artifact_path?: string | null;
 };
 
+export type GeneratedContentSourceLink = {
+  evidence_id?: string | null;
+  section_id: string;
+  title_path: string[];
+  confidence: number;
+  reason: string;
+  matched_terms: string[];
+};
+
+export type GeneratedContentNode = {
+  id: string;
+  title: string;
+  level: number;
+  title_path: string[];
+  start_line: number;
+  end_line: number;
+  markdown: string;
+  body: string;
+  source_links: GeneratedContentSourceLink[];
+  children: GeneratedContentNode[];
+};
+
+export type GeneratedContentTree = {
+  version_id?: string | null;
+  node_id: string;
+  title: string;
+  markdown_line_count: number;
+  nodes: GeneratedContentNode[];
+  artifact_path?: string | null;
+};
+
 export type ChapterTask = {
   node_id: string;
   title: string;
+  target_word_count?: number | null;
   status: string;
   source_matches: SourceMatch[];
   source_mapping?: SourceMappingResult | null;
@@ -124,6 +157,8 @@ export type ChapterVersion = {
   created_by: string;
   status: string;
   created_at: string;
+  content_tree?: GeneratedContentTree;
+  content_tree_path?: string | null;
 };
 
 export type AIProposal = {
@@ -204,6 +239,7 @@ export const updateOutlineNode = (projectId: string, nodeId: string, payload: Pa
 export const deleteOutlineNode = (projectId: string, nodeId: string) => request<{ deleted: boolean }>(`/projects/${projectId}/outline-nodes/${nodeId}`, { method: "DELETE" });
 export const proposeOutlineChange = (projectId: string, suggestion: string, preview?: Record<string, unknown>) => request<AIProposal>(`/projects/${projectId}/outline/propose-ai-change`, { method: "POST", body: JSON.stringify({ suggestion, preview }) });
 export const proposeOutlineAIPlan = (projectId: string, suggestion: string) => request<AIProposal>(`/projects/${projectId}/outline/ai-plan`, { method: "POST", body: JSON.stringify({ suggestion }) });
+export const estimateOutlineWordCounts = (projectId: string, referenceMarkdown?: string | null) => request<{ estimates: Array<Record<string, unknown>>; nodes: OutlineNode[] }>(`/projects/${projectId}/outline/word-counts/estimate`, { method: "POST", body: JSON.stringify({ reference_markdown: referenceMarkdown }) });
 export const applyOutlineProposal = (projectId: string, proposalId: string) => request<AIProposal>(`/projects/${projectId}/outline/proposals/${proposalId}/apply`, { method: "POST" });
 export const getWorkspace = (projectId: string, nodeId: string) => request<ChapterWorkspace>(`/projects/${projectId}/chapters/${nodeId}/workspace`);
 export const addSupplement = (projectId: string, nodeId: string, payload: Partial<ChapterSupplement>) => request<ChapterSupplement>(`/projects/${projectId}/chapters/${nodeId}/supplements`, { method: "POST", body: JSON.stringify(payload) });
@@ -213,6 +249,8 @@ export const generateChapter = (projectId: string, nodeId: string) => request<Ch
 export const getChapter = (projectId: string, nodeId: string) => request<ChapterResponse>(`/projects/${projectId}/chapters/${nodeId}`);
 export const createManualVersion = (projectId: string, nodeId: string, title: string, markdown: string, select = true) => request<ChapterVersion>(`/projects/${projectId}/chapters/${nodeId}/versions`, { method: "POST", body: JSON.stringify({ title, markdown, select }) });
 export const listVersions = (projectId: string, nodeId: string) => request<ChapterVersion[]>(`/projects/${projectId}/chapters/${nodeId}/versions`);
+export const getVersionContentTree = (projectId: string, nodeId: string, versionId: string) => request<GeneratedContentTree>(`/projects/${projectId}/chapters/${nodeId}/versions/${versionId}/content-tree`);
+export const updateVersionContentNode = (projectId: string, nodeId: string, versionId: string, contentNodeId: string, markdown: string, select = true) => request<ChapterVersion>(`/projects/${projectId}/chapters/${nodeId}/versions/${versionId}/content-nodes/${contentNodeId}`, { method: "PATCH", body: JSON.stringify({ markdown, select }) });
 export const selectVersion = (projectId: string, nodeId: string, versionId: string) => request<ChapterVersion>(`/projects/${projectId}/chapters/${nodeId}/selected-version`, { method: "PATCH", body: JSON.stringify({ version_id: versionId }) });
 export const proposeChapterEdit = (projectId: string, nodeId: string, suggestion: string, baseMarkdown?: string) => request<AIProposal>(`/projects/${projectId}/chapters/${nodeId}/propose-ai-edit`, { method: "POST", body: JSON.stringify({ suggestion, base_markdown: baseMarkdown }) });
 export const applyChapterProposal = (projectId: string, nodeId: string, proposalId: string) => request<AIProposal>(`/projects/${projectId}/chapters/${nodeId}/proposals/${proposalId}/apply`, { method: "POST" });

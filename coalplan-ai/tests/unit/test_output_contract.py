@@ -32,6 +32,27 @@ class OutputContractTest(unittest.TestCase):
         result = MarkdownContractValidator().validate(markdown, expected_title="注水工程", source_count=1, missing_items=["注水压力和流量"])
         self.assertTrue(result.passed, result.issues)
 
+
+    def test_accepts_table_source_summary(self) -> None:
+        title = "\u5730\u4e0b\u6d1e\u5ba4\u5f00\u6316\u4e0e\u652f\u62a4\u5de5\u7a0b"
+        source_heading = "\u4e3b\u8981\u6765\u6e90\u6458\u8981"
+        body_heading = "\u751f\u6210\u6b63\u6587"
+        manual_heading = "\u4eba\u5de5\u8865\u5145\u9700\u8865\u5145"
+        manual_item = "\u3010\u9700\u4eba\u5de5\u8865\u5145\uff1a\u73b0\u573a\u56f4\u5ca9\u7c7b\u522b\u3011"
+        markdown = (
+            f"# {title}\n\n"
+            f"## {source_heading}\n"
+            "| evidence_id | section_id | \u4f9d\u636e\u6458\u8981 |\n"
+            "| --- | --- | --- |\n"
+            "| ev_111111111111 | sec_222222222222 | \u5730\u4e0b\u6d1e\u5ba4\u5f00\u6316\u4e0e\u652f\u62a4\u65bd\u5de5\u4f9d\u636e\u3002 |\n\n"
+            f"## {body_heading}\n"
+            "\u672c\u7ae0\u4f9d\u636e\u6295\u6807\u6587\u4ef6\u4e2d\u5730\u4e0b\u6d1e\u5ba4\u5f00\u6316\u4e0e\u652f\u62a4\u76f8\u5173\u5185\u5bb9\u7ec4\u7ec7\u6b63\u6587\u3002\n\n"
+            f"## {manual_heading}\n"
+            f"- {manual_item}"
+        )
+        result = MarkdownContractValidator().validate(markdown, expected_title=title, source_count=1, missing_items=["现场围岩类别"])
+        self.assertTrue(result.passed, result.issues)
+
     def test_rejects_json_and_missing_contract_parts(self) -> None:
         markdown = '{"title": "火区位置"}'
         result = MarkdownContractValidator().validate(markdown, expected_title="火区位置", source_count=1, missing_items=["坐标"])

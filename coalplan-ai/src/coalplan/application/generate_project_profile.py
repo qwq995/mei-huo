@@ -43,7 +43,9 @@ def generate_project_profile(
         profile = _fallback_profile(source_sections)
     result = ProjectProfileValidator().validate(profile, toc_items)
     if not result.passed:
-        raise ValueError("; ".join(issue.message for issue in result.issues))
+        fallback = _fallback_profile(source_sections)
+        fallback.missing_items.extend(f"AI 项目概况输出校验失败：{issue.message}" for issue in result.issues)
+        profile = fallback
     profile.artifact_json_path = artifacts.write_text(project_id, "profile/project_profile.json", to_json_text(dump_model(profile)))
     profile.artifact_markdown_path = artifacts.write_text(project_id, "profile/project_profile.md", render_project_profile_markdown(profile))
     return profile

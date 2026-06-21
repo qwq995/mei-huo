@@ -4,12 +4,14 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
 from .schemas import (
     AIEditProposalRequest,
+    ContentNodeUpdateRequest,
     ManualVersionRequest,
     OutlineAIProposalRequest,
     OutlineNodeCreateRequest,
     OutlineNodeUpdateRequest,
     SelectVersionRequest,
     SupplementRequest,
+    WordCountEstimateRequest,
 )
 
 router = APIRouter(tags=["workspace"])
@@ -65,6 +67,16 @@ def propose_outline_change(project_id: str, payload: OutlineAIProposalRequest, r
 def propose_ai_outline_plan(project_id: str, payload: OutlineAIProposalRequest, request: Request):
     try:
         return request.app.state.pipeline.propose_ai_outline(project_id, payload.suggestion)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/outline/word-counts/estimate")
+def estimate_outline_word_counts(project_id: str, payload: WordCountEstimateRequest, request: Request):
+    try:
+        return request.app.state.pipeline.estimate_outline_word_counts(project_id, payload.reference_markdown)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -173,6 +185,31 @@ def get_version(project_id: str, node_id: str, version_id: str, request: Request
         return request.app.state.workspace_store.get_version(project_id, node_id, version_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/chapters/{node_id}/versions/{version_id}/content-tree")
+def get_version_content_tree(project_id: str, node_id: str, version_id: str, request: Request):
+    try:
+        return request.app.state.workspace_store.get_version_content_tree(project_id, node_id, version_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.patch("/projects/{project_id}/chapters/{node_id}/versions/{version_id}/content-nodes/{content_node_id}")
+def update_version_content_node(project_id: str, node_id: str, version_id: str, content_node_id: str, payload: ContentNodeUpdateRequest, request: Request):
+    try:
+        return request.app.state.workspace_store.update_version_content_node(
+            project_id,
+            node_id,
+            version_id,
+            content_node_id,
+            payload.markdown,
+            select=payload.select,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.patch("/projects/{project_id}/chapters/{node_id}/selected-version")

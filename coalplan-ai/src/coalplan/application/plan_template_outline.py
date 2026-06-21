@@ -56,7 +56,7 @@ def build_template_outline_prompt(*, profile: ProjectProfile, toc_items: list[So
             "输出要求：",
             "只输出 JSON，不要 Markdown，不要解释。",
             "schema：",
-            '{"template_id":"string","nodes":[{"node_id":"string","title":"string","level":1,"enabled":true,"source_hints":["section_id"],"main_sources":["string"],"auto_fill":["string"],"manual_fill":["string"],"special_notes":["string"]}]}',
+            '{"template_id":"string","nodes":[{"node_id":"string","title":"string","level":1,"enabled":true,"source_hints":["section_id"],"main_sources":["string"],"auto_fill":["string"],"manual_fill":["string"],"special_notes":["string"],"target_word_count":800}]}',
             "",
             "规则：",
             "- node_id 必须来自目标模板树。",
@@ -66,6 +66,7 @@ def build_template_outline_prompt(*, profile: ProjectProfile, toc_items: list[So
             "- auto_fill 只能写模型可归纳、润色、组织的内容。",
             "- manual_fill 必须写现场、图纸、合同、审批、实测、人员设备等需人工确认项。",
             "- special_notes 仅在边界、地质、水文、施工参数、质量验收、安全风险等重难点出现；没有则为空数组。",
+            "- target_word_count 为本节建议目标字数，可为 null；不得为了凑字数编造来源不支持的参数。",
         ]
     )
 
@@ -84,6 +85,9 @@ def render_outline_markdown(outline: TemplateOutlinePlan) -> str:
         lines.extend(
             [
                 f"{heading} {node.title}",
+                "",
+                "[目标字数]",
+                f"- {node.target_word_count} 字" if node.target_word_count else "- 未设置",
                 "",
                 "[主要来源]",
                 *[f"- {item}" for item in node.main_sources],
@@ -112,6 +116,7 @@ def _flat_template_nodes(template_tree: TemplateTree) -> list[dict]:
             "manual_fill": node.manual_fill,
             "special_notes": node.special_notes,
             "has_generation_contract": node.has_generation_contract,
+            "target_word_count": node.target_word_count,
         }
         for node in iter_template_nodes(template_tree.nodes)
     ]
@@ -148,6 +153,7 @@ def _fallback_outline(profile: ProjectProfile, template_tree: TemplateTree, toc_
                 auto_fill=node.auto_fill,
                 manual_fill=node.manual_fill,
                 special_notes=node.special_notes,
+                target_word_count=node.target_word_count,
             )
         )
     return TemplateOutlinePlan(template_id=template_tree.id, nodes=nodes)
@@ -185,6 +191,7 @@ def _apply_outline_node(node: TemplateNode, outline_by_id: dict[str, TemplateOut
         auto_fill=patch.auto_fill if patch else node.auto_fill,
         manual_fill=patch.manual_fill if patch else node.manual_fill,
         special_notes=patch.special_notes if patch else node.special_notes,
+        target_word_count=patch.target_word_count if patch and patch.target_word_count is not None else node.target_word_count,
         children=[],
     )
     updated.children = [_apply_outline_node(child, outline_by_id) for child in node.children]

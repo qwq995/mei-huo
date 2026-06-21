@@ -10,6 +10,7 @@ from coalplan.application.merge_chapters import merge_chapters
 from coalplan.application.persist_source_index import persist_source_index
 from coalplan.application.plan_template_outline import apply_outline_to_template_tree, plan_template_outline
 from coalplan.application.serialization import dump_model, to_json_text
+from coalplan.application.word_count_targets import estimate_word_count_targets
 from coalplan.domain.enums import RunStatus, TaskStatus
 from coalplan.domain.generation import ChapterDraft, ChapterTask, GenerationRun, Project
 from coalplan.domain.templates import TemplateNode, TemplateTree, iter_template_nodes
@@ -78,6 +79,28 @@ class GenerationPipeline:
             project = self.projects.save(project)
         return project
 
+    def estimate_outline_word_counts(self, project_id: str, reference_markdown: str | None = None) -> dict:
+        if self.workspace_store is None:
+            raise ValueError("Workspace store is not configured.")
+        project = self.prepare_directory(project_id)
+        project.template_tree = self._effective_template_tree(project)
+        if project.template_tree is None:
+            raise ValueError("Project template tree is not loaded.")
+        estimates = estimate_word_count_targets(project.template_tree.nodes, reference_markdown)
+        nodes = self.workspace_store.update_outline_word_counts(
+            project.id,
+            {estimate.node_id: estimate.target_word_count for estimate in estimates},
+        )
+        payload = {
+            "project_id": project.id,
+            "reference_supplied": bool(reference_markdown and reference_markdown.strip()),
+            "estimates": [dump_model(estimate) for estimate in estimates],
+            "nodes": nodes,
+        }
+        self.artifacts.write_text(project.id, "outline/word_count_targets.json", to_json_text(payload))
+        self.artifacts.write_text(project.id, "outline/word_count_targets.md", _render_word_count_targets(estimates))
+        return payload
+
     def propose_ai_outline(self, project_id: str, suggestion: str = "") -> dict:
         if self.workspace_store is None:
             raise ValueError("Workspace store is not configured.")
@@ -138,6 +161,7 @@ class GenerationPipeline:
         for task in run.chapter_tasks:
             try:
                 node = nodes_by_id[task.node_id]
+                task.target_word_count = node.target_word_count
                 mapping, selected_sections, source_matches = map_chapter_sources(
                     project_id=project.id,
                     profile=project.project_profile,
@@ -185,8 +209,10 @@ class GenerationPipeline:
             raise KeyError(f"Unknown node_id: {node_id}")
         task = next((item for item in run.chapter_tasks if item.node_id == node_id), None)
         if task is None:
-            task = ChapterTask(node_id=node.id, title=node.title, source_matches=self.retriever.retrieve(node, project.sections, limit=4))
+            task = ChapterTask(node_id=node.id, title=node.title, target_word_count=node.target_word_count, source_matches=self.retriever.retrieve(node, project.sections, limit=4))
             run.chapter_tasks.append(task)
+        else:
+            task.target_word_count = node.target_word_count
         mapping, selected_sections, source_matches = map_chapter_sources(
             project_id=project.id,
             profile=project.project_profile,
@@ -312,6 +338,7 @@ class GenerationPipeline:
                 supplement_ids=supplement_ids,
                 created_by="ai",
                 select=True,
+                source_mapping=draft.source_mapping,
             )
         except Exception as exc:
             # Versioning should not make the generation endpoint fail after a valid draft was produced.
@@ -395,3 +422,12 @@ def _validation_payload(run: GenerationRun) -> dict:
             for task in run.chapter_tasks
         ],
     }
+
+
+def _render_word_count_targets(estimates) -> str:
+    lines = ["# 目录目标字数", ""]
+    for estimate in estimates:
+        matched = f"；参考标题：{estimate.matched_reference_title}" if estimate.matched_reference_title else ""
+        reference_count = f"；参考字数：{estimate.reference_word_count}" if estimate.reference_word_count else ""
+        lines.append(f"- `{estimate.node_id}` {estimate.title}：{estimate.target_word_count} 字（{estimate.method}{matched}{reference_count}）")
+    return "\n".join(lines).strip() + "\n"

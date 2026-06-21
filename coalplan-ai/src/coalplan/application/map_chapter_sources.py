@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from coalplan.application.serialization import dump_model, to_json_text
 from coalplan.domain.documents import MarkdownSection, SourceTocItem
 from coalplan.domain.generation import SourceMatch
@@ -23,11 +25,15 @@ def map_chapter_sources(
     llm: StructuredLLMClient,
     artifacts: ArtifactRepository,
 ) -> tuple[SourceMappingResult, list[MarkdownSection], list[SourceMatch]]:
-    data = llm.complete_json(
-        build_source_mapping_prompt(profile=profile, toc_items=toc_items, node=node),
-        schema_name="SourceMappingResult",
-    )
-    mapping = SourceMappingResult(**data)
+    try:
+        data = llm.complete_json(
+            build_source_mapping_prompt(profile=profile, toc_items=toc_items, node=node),
+            schema_name="SourceMappingResult",
+        )
+        mapping = SourceMappingResult(**data)
+    except Exception as exc:
+        mapping = _fallback_mapping(node=node, toc_items=toc_items, sections=sections)
+        mapping.validation_issues.append(f"AI source mapping failed; used keyword fallback: {exc}")
     mapping = _clean_mapping(mapping, toc_items)
     result = SourceMappingValidator().validate(mapping, toc_items)
     if not result.passed:
@@ -53,6 +59,31 @@ def map_chapter_sources(
     mapping.evidence_artifact_path = artifacts.write_text(project_id, f"mapping/{node.id}.evidence.md", _render_evidence_markdown(mapping))
     mapping.artifact_path = artifacts.write_text(project_id, f"mapping/{node.id}.json", to_json_text(dump_model(mapping)))
     return mapping, selected_sections, source_matches
+
+
+def _fallback_mapping(*, node: TemplateNode, toc_items: list[SourceTocItem], sections: list[MarkdownSection]) -> SourceMappingResult:
+    terms = _terms(" ".join([node.title, *node.source_rules, *node.auto_fill, *node.special_notes]))
+    section_by_id = {section.id: section for section in sections}
+    scored: list[tuple[float, SourceTocItem]] = []
+    for item in toc_items:
+        haystack = " ".join([*item.title_path, item.snippet, section_by_id.get(item.section_id).content[:800] if item.section_id in section_by_id else ""])
+        score = _term_score(haystack, terms)
+        if score > 0:
+            scored.append((score, item))
+    if not scored:
+        scored = [(1.0, item) for item in toc_items if item.char_count > 0][:8]
+    scored.sort(key=lambda item: (item[0], item[1].char_count), reverse=True)
+    matches = [
+        SourceMappingMatch(
+            section_id=item.section_id,
+            title_path=item.title_path,
+            usage="fact",
+            reason="keyword_fallback_mapping",
+            confidence=round(min(0.75, 0.35 + score / 20), 3),
+        )
+        for score, item in scored[:8]
+    ]
+    return SourceMappingResult(node_id=node.id, matches=matches)
 
 
 def build_source_mapping_prompt(*, profile: ProjectProfile, toc_items: list[SourceTocItem], node: TemplateNode) -> str:
@@ -162,3 +193,23 @@ def _compact_toc(toc_items: list[SourceTocItem]) -> list[dict]:
         }
         for item in toc_items
     ]
+
+
+def _terms(text: str) -> list[str]:
+    stop = {"施工", "工程", "组织", "设计", "方案", "章节", "主要", "来源", "自动", "补充"}
+    seen: list[str] = []
+    for term in re.findall(r"[\u4e00-\u9fff]{2,8}|[A-Za-z][A-Za-z0-9_-]{1,30}|\d+(?:\.\d+)?", text or ""):
+        if term in stop or term in seen:
+            continue
+        seen.append(term)
+    return seen
+
+
+def _term_score(text: str, terms: list[str]) -> float:
+    compact = re.sub(r"\s+", " ", text or "")
+    score = 0.0
+    for term in terms:
+        count = compact.count(term)
+        if count:
+            score += min(count, 5) * (1 + min(len(term), 8) / 10)
+    return score

@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import func
 
+from coalplan.application.generated_content_tree import build_generated_content_tree, replace_content_node_markdown
+from coalplan.application.serialization import dump_model, to_json_text
+from coalplan.domain.outline import SourceMappingResult
 from coalplan.domain.templates import TemplateNode
 
 from coalplan.infrastructure.database.models import (
@@ -55,6 +59,7 @@ class WorkspaceStore:
                 auto_fill_json=_json(payload.get("auto_fill", [])),
                 manual_fill_json=_json(payload.get("manual_fill", [])),
                 special_notes_json=_json(payload.get("special_notes", [])),
+                target_word_count=payload.get("target_word_count"),
             )
             session.add(row)
             session.commit()
@@ -63,7 +68,7 @@ class WorkspaceStore:
     def update_outline_node(self, project_id: str, node_id: str, payload: dict) -> dict:
         with self.session_factory() as session:
             row = _get_outline(session, project_id, node_id)
-            for key in ["title", "parent_id", "level", "sort_order", "enabled"]:
+            for key in ["title", "parent_id", "level", "sort_order", "enabled", "target_word_count"]:
                 if key in payload:
                     setattr(row, key, payload[key])
             mapping = {
@@ -78,6 +83,16 @@ class WorkspaceStore:
             row.updated_at = datetime.now()
             session.commit()
             return _outline_dict(row)
+
+    def update_outline_word_counts(self, project_id: str, word_counts: dict[str, int | None]) -> list[dict]:
+        with self.session_factory() as session:
+            rows = session.query(ProjectOutlineNodeRecord).filter_by(project_id=project_id).all()
+            for row in rows:
+                if row.node_id in word_counts:
+                    row.target_word_count = word_counts[row.node_id]
+                    row.updated_at = datetime.now()
+            session.commit()
+            return self.list_outline_nodes(project_id)
 
     def delete_outline_node(self, project_id: str, node_id: str) -> None:
         with self.session_factory() as session:
@@ -105,6 +120,7 @@ class WorkspaceStore:
                         auto_fill=row["auto_fill"],
                         manual_fill=row["manual_fill"],
                         special_notes=row["special_notes"],
+                        target_word_count=row.get("target_word_count"),
                         children=build(row["node_id"]),
                     )
                 )
@@ -133,7 +149,7 @@ class WorkspaceStore:
                 "outline_node": _outline_dict(outline),
                 "supplements": [_supplement_dict(row) for row in supplements],
                 "attachments": [_attachment_dict(row) for row in attachments],
-                "versions": [_version_dict(row) for row in versions],
+                "versions": [self._version_dict_with_tree(row) for row in versions],
                 "selected_version_id": outline.selected_version_id,
                 "proposals": [_proposal_dict(row) for row in proposals],
             }
@@ -224,6 +240,8 @@ class WorkspaceStore:
         supplement_ids: list[str] | None = None,
         created_by: str = "system",
         select: bool = True,
+        source_mapping: SourceMappingResult | dict | None = None,
+        fallback_content_tree: dict | None = None,
     ) -> dict:
         with self.session_factory() as session:
             version_no = (session.query(func.max(ChapterVersionRecord.version_no)).filter_by(project_id=project_id, node_id=node_id).scalar() or 0) + 1
@@ -248,19 +266,20 @@ class WorkspaceStore:
                 row.status = "selected"
                 outline.selected_version_id = row.id
             session.commit()
-            return _version_dict(row)
+            version = self._version_dict_with_tree(row, source_mapping=source_mapping, fallback_content_tree=fallback_content_tree)
+            return version
 
     def list_versions(self, project_id: str, node_id: str) -> list[dict]:
         with self.session_factory() as session:
             rows = session.query(ChapterVersionRecord).filter_by(project_id=project_id, node_id=node_id).order_by(ChapterVersionRecord.version_no.desc()).all()
-            return [_version_dict(row) for row in rows]
+            return [self._version_dict_with_tree(row) for row in rows]
 
     def get_version(self, project_id: str, node_id: str, version_id: str) -> dict:
         with self.session_factory() as session:
             row = session.get(ChapterVersionRecord, version_id)
             if row is None or row.project_id != project_id or row.node_id != node_id:
                 raise KeyError(f"Unknown version_id: {version_id}")
-            return _version_dict(row)
+            return self._version_dict_with_tree(row)
 
     def select_version(self, project_id: str, node_id: str, version_id: str) -> dict:
         with self.session_factory() as session:
@@ -272,7 +291,42 @@ class WorkspaceStore:
             row.status = "selected"
             outline.selected_version_id = row.id
             session.commit()
-            return _version_dict(row)
+            return self._version_dict_with_tree(row)
+
+    def get_version_content_tree(self, project_id: str, node_id: str, version_id: str) -> dict:
+        version = self.get_version(project_id, node_id, version_id)
+        return version["content_tree"]
+
+    def update_version_content_node(
+        self,
+        project_id: str,
+        node_id: str,
+        version_id: str,
+        content_node_id: str,
+        markdown: str,
+        *,
+        select: bool = True,
+    ) -> dict:
+        version = self.get_version(project_id, node_id, version_id)
+        updated_markdown = replace_content_node_markdown(
+            version["markdown"],
+            node_id=node_id,
+            content_node_id=content_node_id,
+            replacement_markdown=markdown,
+        )
+        return self.create_chapter_version(
+            project_id,
+            node_id,
+            title=version["title"],
+            markdown=updated_markdown,
+            artifact_path=None,
+            source_type="subsection_edit",
+            source_section_ids=version.get("source_section_ids", []),
+            supplement_ids=version.get("supplement_ids", []),
+            created_by="user",
+            select=select,
+            fallback_content_tree=version.get("content_tree"),
+        )
 
     def propose_chapter_edit(self, project_id: str, node_id: str, suggestion: str, preview_markdown: str) -> dict:
         return self._create_proposal(project_id, "chapter", node_id, suggestion, {"markdown": preview_markdown})
@@ -288,6 +342,12 @@ class WorkspaceStore:
             data = json.loads(proposal.preview_json)
             if proposal.target_type == "chapter":
                 node = _get_outline(session, project_id, proposal.target_id)
+                selected = None
+                if node.selected_version_id:
+                    selected = session.get(ChapterVersionRecord, node.selected_version_id)
+                fallback_tree = None
+                if selected is not None:
+                    fallback_tree = self._version_dict_with_tree(selected).get("content_tree")
                 version_no = (session.query(func.max(ChapterVersionRecord.version_no)).filter_by(project_id=project_id, node_id=proposal.target_id).scalar() or 0) + 1
                 _mark_versions_candidate(session, project_id, proposal.target_id)
                 version = ChapterVersionRecord(
@@ -298,8 +358,8 @@ class WorkspaceStore:
                     source_type="ai_edit",
                     title=node.title,
                     markdown=data.get("markdown", ""),
-                    source_section_ids_json="[]",
-                    supplement_ids_json="[]",
+                    source_section_ids_json=selected.source_section_ids_json if selected is not None else "[]",
+                    supplement_ids_json=selected.supplement_ids_json if selected is not None else "[]",
                     created_by="ai",
                     status="selected",
                 )
@@ -312,7 +372,7 @@ class WorkspaceStore:
                         continue
                     row = _get_outline(session, project_id, node_id)
                     for key, value in patch.items():
-                        if key in {"title", "level", "sort_order", "enabled", "parent_id"}:
+                        if key in {"title", "level", "sort_order", "enabled", "parent_id", "target_word_count"}:
                             setattr(row, key, value)
                     json_fields = {
                         "source_rules": "source_rules_json",
@@ -327,6 +387,15 @@ class WorkspaceStore:
             proposal.status = "applied"
             proposal.applied_at = datetime.now()
             session.commit()
+            if proposal.target_type == "chapter":
+                self._ensure_content_tree(
+                    project_id=project_id,
+                    node_id=proposal.target_id,
+                    version_id=version.id,
+                    title=version.title,
+                    markdown=version.markdown,
+                    fallback_content_tree=fallback_tree,
+                )
             return _proposal_dict(proposal)
 
     def _create_proposal(self, project_id: str, target_type: str, target_id: str, suggestion: str, preview: dict) -> dict:
@@ -342,6 +411,58 @@ class WorkspaceStore:
             session.add(row)
             session.commit()
             return _proposal_dict(row)
+
+    def _version_dict_with_tree(
+        self,
+        row: ChapterVersionRecord,
+        source_mapping: SourceMappingResult | dict | None = None,
+        fallback_content_tree: dict | None = None,
+    ) -> dict:
+        data = _version_dict(row)
+        tree = self._ensure_content_tree(
+            project_id=row.project_id,
+            node_id=row.node_id,
+            version_id=row.id,
+            title=row.title,
+            markdown=row.markdown,
+            source_mapping=source_mapping,
+            fallback_content_tree=fallback_content_tree,
+        )
+        data["content_tree"] = tree
+        data["content_tree_path"] = tree.get("artifact_path")
+        return data
+
+    def _ensure_content_tree(
+        self,
+        *,
+        project_id: str,
+        node_id: str,
+        version_id: str,
+        title: str,
+        markdown: str,
+        source_mapping: SourceMappingResult | dict | None = None,
+        fallback_content_tree: dict | None = None,
+    ) -> dict:
+        relative = _content_tree_relative_path(node_id, version_id)
+        path = Path(self.artifacts.root) / project_id / relative
+        if path.exists() and source_mapping is None and fallback_content_tree is None:
+            try:
+                return json.loads(path.read_text(encoding="utf-8-sig"))
+            except Exception:
+                pass
+        tree = build_generated_content_tree(
+            node_id=node_id,
+            title=title,
+            markdown=markdown,
+            version_id=version_id,
+            source_mapping=source_mapping,
+            fallback_tree=fallback_content_tree,
+        )
+        artifact_path = self.artifacts.write_text(project_id, relative, to_json_text(dump_model(tree)))
+        data = dump_model(tree)
+        data["artifact_path"] = artifact_path
+        Path(artifact_path).write_text(to_json_text(data), encoding="utf-8")
+        return data
 
 
 def _get_outline(session, project_id: str, node_id: str) -> ProjectOutlineNodeRecord:
@@ -376,6 +497,7 @@ def _outline_dict(row: ProjectOutlineNodeRecord) -> dict:
         "auto_fill": _loads(row.auto_fill_json),
         "manual_fill": _loads(row.manual_fill_json),
         "special_notes": _loads(row.special_notes_json),
+        "target_word_count": row.target_word_count,
         "selected_version_id": row.selected_version_id,
     }
 
@@ -441,3 +563,7 @@ def _json(value) -> str:
 
 def _loads(value: str):
     return json.loads(value) if value else None
+
+
+def _content_tree_relative_path(node_id: str, version_id: str) -> str:
+    return f"chapters/{node_id}/versions/{version_id}.content_tree.json"

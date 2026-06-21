@@ -35,7 +35,13 @@ class MarkdownContractValidator:
 
 def _has_source_summary_items(markdown: str) -> bool:
     block = _heading_block(markdown, "主要来源摘要")
-    return "来源" in block or bool(re.search(r"^\s*[-*]\s+\S+", block, flags=re.M))
+    return (
+        "来源" in block
+        or "section_id" in block
+        or "evidence_id" in block
+        or bool(re.search(r"^\s*[-*]\s+\S+", block, flags=re.M))
+        or bool(re.search(r"^\s*\|.+\|\s*$", block, flags=re.M))
+    )
 
 
 def _has_manual_fill_items(markdown: str) -> bool:

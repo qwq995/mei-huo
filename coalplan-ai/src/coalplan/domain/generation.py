@@ -27,6 +27,7 @@ class SourceMatch(BaseModel):
 class ChapterTask(BaseModel):
     node_id: str
     title: str
+    target_word_count: int | None = None
     status: TaskStatus = TaskStatus.pending
     source_matches: list[SourceMatch] = Field(default_factory=list)
     source_mapping: SourceMappingResult | None = None
@@ -40,6 +41,7 @@ class ChapterDraft(BaseModel):
     title: str
     markdown: str
     source_section_ids: list[str] = Field(default_factory=list)
+    source_mapping: SourceMappingResult | None = None
     missing_items: list[str] = Field(default_factory=list)
     validation_status: TaskStatus = TaskStatus.pending
     validation_issues: list[ValidationIssue] = Field(default_factory=list)
