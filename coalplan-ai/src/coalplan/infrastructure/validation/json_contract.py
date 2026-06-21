@@ -44,4 +44,9 @@ class SourceMappingValidator:
                 issues.append(ValidationIssue(code="invalid_mapping_section_id", message=f"Unknown mapping section_id: {match.section_id}"))
             if not 0 <= match.confidence <= 1:
                 issues.append(ValidationIssue(code="invalid_mapping_confidence", message=f"Confidence out of range: {match.confidence}"))
+        for span in mapping.evidence:
+            if span.section_id not in valid_ids:
+                issues.append(ValidationIssue(code="invalid_evidence_section_id", message=f"Unknown evidence section_id: {span.section_id}"))
+            if not 0 <= span.confidence <= 1:
+                issues.append(ValidationIssue(code="invalid_evidence_confidence", message=f"Evidence confidence out of range: {span.confidence}"))
         return ValidationResult(passed=not issues, issues=issues)

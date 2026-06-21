@@ -388,6 +388,8 @@ def _validation_payload(run: GenerationRun) -> dict:
                 "status": task.status.value,
                 "source_section_ids": [match.section_id for match in task.source_matches],
                 "mapping": dump_model(task.source_mapping) if task.source_mapping else None,
+                "evidence_count": len(task.source_mapping.evidence) if task.source_mapping else 0,
+                "evidence_artifact_path": task.source_mapping.evidence_artifact_path if task.source_mapping else None,
                 "error_message": task.error_message,
             }
             for task in run.chapter_tasks

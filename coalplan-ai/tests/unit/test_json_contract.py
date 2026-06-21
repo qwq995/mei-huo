@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from coalplan.domain.documents import SourceTocItem
-from coalplan.domain.outline import SourceMappingMatch, SourceMappingResult, TemplateOutlineNode, TemplateOutlinePlan
+from coalplan.domain.outline import SourceEvidenceSpan, SourceMappingMatch, SourceMappingResult, TemplateOutlineNode, TemplateOutlinePlan
 from coalplan.domain.profile import ProjectProfile
 from coalplan.domain.templates import TemplateNode, TemplateTree
 from coalplan.infrastructure.validation.json_contract import (
@@ -51,12 +51,15 @@ class JsonContractTest(unittest.TestCase):
         mapping = SourceMappingResult(
             node_id="tpl_valid",
             matches=[SourceMappingMatch(section_id="sec_missing0001", confidence=0.8)],
+            evidence=[SourceEvidenceSpan(evidence_id="ev_missing", section_id="sec_missing0001", confidence=0.6)],
         )
 
         result = SourceMappingValidator().validate(mapping, toc_items)
 
         self.assertFalse(result.passed)
-        self.assertIn("invalid_mapping_section_id", {issue.code for issue in result.issues})
+        codes = {issue.code for issue in result.issues}
+        self.assertIn("invalid_mapping_section_id", codes)
+        self.assertIn("invalid_evidence_section_id", codes)
 
 
 def _toc(section_id: str) -> SourceTocItem:

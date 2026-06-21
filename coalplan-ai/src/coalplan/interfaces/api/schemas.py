@@ -97,6 +97,7 @@ class ChapterResponse(BaseModel):
     markdown: str = ""
     draft_path: str | None = None
     source_matches: list[dict] = Field(default_factory=list)
+    source_mapping: dict | None = None
     version: dict | None = None
 
 

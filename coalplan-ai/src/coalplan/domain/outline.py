@@ -28,11 +28,29 @@ class SourceMappingMatch(BaseModel):
     usage: str = "fact"
     reason: str = ""
     confidence: float = 0.0
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class SourceEvidenceSpan(BaseModel):
+    evidence_id: str
+    section_id: str
+    title_path: list[str] = Field(default_factory=list)
+    start_line: int | None = None
+    end_line: int | None = None
+    usage: str = "fact"
+    template_module: str = "main_sources"
+    matched_terms: list[str] = Field(default_factory=list)
+    quote: str = ""
+    summary: str = ""
+    reason: str = ""
+    confidence: float = 0.0
 
 
 class SourceMappingResult(BaseModel):
     node_id: str
     matches: list[SourceMappingMatch] = Field(default_factory=list)
+    evidence: list[SourceEvidenceSpan] = Field(default_factory=list)
     missing_evidence: list[str] = Field(default_factory=list)
     validation_issues: list[str] = Field(default_factory=list)
     artifact_path: str | None = None
+    evidence_artifact_path: str | None = None

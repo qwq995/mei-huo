@@ -10,6 +10,8 @@ from coalplan.infrastructure.validation.json_contract import SourceMappingValida
 from coalplan.ports.llm import StructuredLLMClient
 from coalplan.ports.repository import ArtifactRepository
 
+from .source_evidence import attach_evidence_ids, build_source_evidence
+
 
 def map_chapter_sources(
     *,
@@ -33,16 +35,22 @@ def map_chapter_sources(
         mapping.matches = [match for match in mapping.matches if match.section_id in {item.section_id for item in toc_items}]
     section_by_id = {section.id: section for section in sections}
     selected_sections = [section_by_id[match.section_id] for match in mapping.matches if match.section_id in section_by_id]
+    mapping.evidence = build_source_evidence(node=node, matches=mapping.matches, sections=selected_sections)
+    attach_evidence_ids(mapping.matches, mapping.evidence)
     match_by_section_id = {match.section_id: match for match in mapping.matches}
+    evidence_by_section_id: dict[str, list[str]] = {}
+    for span in mapping.evidence:
+        evidence_by_section_id.setdefault(span.section_id, []).append(f"{span.evidence_id}: {span.summary}")
     source_matches = [
         SourceMatch(
             section_id=section.id,
             title_path=section.title_path,
-            snippet=_snippet(section.content),
+            snippet=_source_match_snippet(section.content, evidence_by_section_id.get(section.id, [])),
             score=round(match_by_section_id[section.id].confidence, 3) if section.id in match_by_section_id else 0,
         )
         for section in selected_sections
     ]
+    mapping.evidence_artifact_path = artifacts.write_text(project_id, f"mapping/{node.id}.evidence.md", _render_evidence_markdown(mapping))
     mapping.artifact_path = artifacts.write_text(project_id, f"mapping/{node.id}.json", to_json_text(dump_model(mapping)))
     return mapping, selected_sections, source_matches
 
@@ -105,6 +113,43 @@ def _clean_mapping(mapping: SourceMappingResult, toc_items: list[SourceTocItem])
 def _snippet(text: str, limit: int = 420) -> str:
     compact = " ".join(text.split())
     return compact if len(compact) <= limit else compact[:limit].rstrip() + "..."
+
+
+def _source_match_snippet(section_content: str, evidence_summaries: list[str]) -> str:
+    if evidence_summaries:
+        return " | ".join(evidence_summaries[:3])
+    return _snippet(section_content)
+
+
+def _render_evidence_markdown(mapping: SourceMappingResult) -> str:
+    lines = [f"# Source Evidence Map: {mapping.node_id}", ""]
+    if not mapping.evidence:
+        lines.append("No source evidence spans were selected.")
+        return "\n".join(lines).strip() + "\n"
+    for span in mapping.evidence:
+        title_path = " > ".join(span.title_path)
+        line_range = ""
+        if span.start_line is not None and span.end_line is not None:
+            line_range = f"L{span.start_line}-L{span.end_line}"
+        lines.extend(
+            [
+                f"## {span.evidence_id}",
+                f"- section_id: `{span.section_id}`",
+                f"- title_path: {title_path}",
+                f"- lines: {line_range or 'unknown'}",
+                f"- usage: {span.usage}",
+                f"- template_module: {span.template_module}",
+                f"- confidence: {span.confidence}",
+                f"- matched_terms: {', '.join(span.matched_terms) if span.matched_terms else 'none'}",
+                f"- reason: {span.reason or 'none'}",
+                "",
+                "```text",
+                span.quote.strip(),
+                "```",
+                "",
+            ]
+        )
+    return "\n".join(lines).strip() + "\n"
 
 
 def _compact_toc(toc_items: list[SourceTocItem]) -> list[dict]:

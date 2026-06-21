@@ -47,11 +47,46 @@ export type SourceMatch = {
   score: number;
 };
 
+export type SourceEvidenceSpan = {
+  evidence_id: string;
+  section_id: string;
+  title_path: string[];
+  start_line?: number | null;
+  end_line?: number | null;
+  usage: string;
+  template_module: string;
+  matched_terms: string[];
+  quote: string;
+  summary: string;
+  reason: string;
+  confidence: number;
+};
+
+export type SourceMappingMatch = {
+  section_id: string;
+  title_path: string[];
+  usage: string;
+  reason: string;
+  confidence: number;
+  evidence_ids: string[];
+};
+
+export type SourceMappingResult = {
+  node_id: string;
+  matches: SourceMappingMatch[];
+  evidence: SourceEvidenceSpan[];
+  missing_evidence: string[];
+  validation_issues: string[];
+  artifact_path?: string | null;
+  evidence_artifact_path?: string | null;
+};
+
 export type ChapterTask = {
   node_id: string;
   title: string;
   status: string;
   source_matches: SourceMatch[];
+  source_mapping?: SourceMappingResult | null;
   draft_id?: string | null;
   error_message?: string | null;
 };
@@ -140,6 +175,7 @@ export type ChapterResponse = {
   status: string;
   markdown: string;
   source_matches: SourceMatch[];
+  source_mapping?: SourceMappingResult | null;
   version?: ChapterVersion | null;
 };
 

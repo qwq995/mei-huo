@@ -239,6 +239,7 @@ def _task_dict(task) -> dict:
         "title": task.title,
         "status": task.status.value,
         "source_matches": [dump_model(match) for match in task.source_matches],
+        "source_mapping": dump_model(task.source_mapping) if task.source_mapping else None,
         "draft_id": task.draft_id,
         "error_message": task.error_message,
     }

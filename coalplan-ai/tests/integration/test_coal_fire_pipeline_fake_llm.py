@@ -58,6 +58,9 @@ class CoalFirePipelineFakeLLMTest(unittest.TestCase):
             self.assertEqual(RunStatus.completed, run.status)
             self.assertTrue((artifact_root / "runs" / run.id / "validation.json").exists())
             self.assertTrue(any((artifact_root / "mapping").glob("*.json")))
+            self.assertTrue(any((artifact_root / "mapping").glob("*.evidence.md")))
+            task_with_evidence = next((task for task in run.chapter_tasks if task.source_mapping and task.source_mapping.evidence), None)
+            self.assertIsNotNone(task_with_evidence)
             self.assertTrue(any((artifact_root / "chapters").glob("*.md")))
 
             run = pipeline.merge_latest(project.id)

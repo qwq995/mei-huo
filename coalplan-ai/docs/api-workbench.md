@@ -368,11 +368,18 @@
 单章生成。流程为：
 
 1. 依据当前目录节点和来源目录做来源映射。
-2. 把映射到的来源章节全文加入 prompt。
-3. 注入项目概况、目录四模块、章节补充材料、附件说明、当前选中历史版本。
-4. LLM 生成 Markdown。
-5. 校验格式。
-6. 创建新的 `chapter_versions` 版本并设为选中。
+2. 对已匹配章节做后端细粒度证据抽取，生成 `evidence_id / section_id / 标题路径 / 行号范围 / 原文摘录 / 对应模板模块 / 使用方式`。
+3. 把“原文文段映射表”和映射到的来源章节全文加入 prompt。
+4. 注入项目概况、目录四模块、章节补充材料、附件说明、当前选中历史版本。
+5. LLM 生成 Markdown。
+6. 校验格式。
+7. 创建新的 `chapter_versions` 版本并设为选中。
+
+落盘追溯文件：
+
+- `mapping/{node_id}.json`：章节级来源映射与文段级 evidence。
+- `mapping/{node_id}.evidence.md`：便于人工查看的原文文段映射表。
+- `chapters/{node_id}.md`：本次章节生成结果。
 
 返回：
 
@@ -384,6 +391,29 @@
   "markdown": "# 1.1 工程概况\n...",
   "draft_path": ".../chapters/node_xxx.md",
   "source_matches": [],
+  "source_mapping": {
+    "node_id": "node_xxx",
+    "matches": [
+      {
+        "section_id": "sec_xxx",
+        "title_path": ["施工组织", "工程概况"],
+        "usage": "fact",
+        "reason": "与工程概况相关",
+        "confidence": 0.86,
+        "evidence_ids": ["ev_xxx"]
+      }
+    ],
+    "evidence": [
+      {
+        "evidence_id": "ev_xxx",
+        "section_id": "sec_xxx",
+        "start_line": 42,
+        "end_line": 44,
+        "template_module": "main_sources",
+        "quote": "原文摘录..."
+      }
+    ]
+  },
   "version": {}
 }
 ```

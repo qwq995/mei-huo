@@ -71,6 +71,7 @@ def build_chapter_prompt(
         f"- section_id: {match.section_id}；标题路径：{' > '.join(match.title_path)}；摘要：{match.snippet}"
         for match in task.source_matches
     ] or ["- 未在投标文档中识别到强匹配章节。"]
+    evidence_map = _render_source_evidence(task)
     return "\n".join(
         [
             "你是施工组织设计正文生成 agent。你必须依据真实投标文档内容生成当前小章节 Markdown。",
@@ -99,6 +100,9 @@ def build_chapter_prompt(
             "## 已匹配来源章节摘要",
             *source_lines,
             "",
+            "## 原文文段映射表（模板要求 -> 输入文档证据）",
+            evidence_map,
+            "",
             "## 已确认来源章节全文",
             _render_full_source_sections(selected_source_sections),
             "",
@@ -120,7 +124,9 @@ def build_chapter_prompt(
             "## 特殊备注",
             "",
             "正文写作规则：",
+            "- 优先依据“原文文段映射表”组织正文；涉及项目事实、工程量、工艺参数、质量安全要求时，应从 evidence_id 对应原文摘录中取材。",
             "- “主要来源摘要”必须列出来源章节 section_id、标题路径和依据摘要。",
+            "- “主要来源摘要”中优先写出 evidence_id、section_id、标题路径和依据摘要，便于追溯每个小章节对应的原文段落。",
             "- “生成正文”必须是可直接进入施工组织设计的小章节正文，不要写“系统依据”“可整理为”等流程说明。",
             "- 优先写成完整段落；需要表达工程量、范围、工艺、控制目标时可使用表格或条列。",
             "- 所有数字、单位、工程量和专有名词必须来自来源章节；不能确定的写为 `【需人工补充：...】`。",
@@ -141,6 +147,9 @@ def build_repair_prompt(*, node: TemplateNode, task: ChapterTask, bad_markdown: 
             "",
             "来源片段：",
             *[f"- section_id: {match.section_id}；标题路径：{' > '.join(match.title_path)}；摘要：{match.snippet}" for match in task.source_matches],
+            "",
+            "原文文段映射表：",
+            _render_source_evidence(task),
             "",
             "原始输出：",
             bad_markdown,
@@ -181,3 +190,35 @@ def _render_full_source_sections(sections: list[MarkdownSection]) -> str:
             )
         )
     return "\n\n---\n\n".join(blocks)
+
+
+def _render_source_evidence(task: ChapterTask) -> str:
+    mapping = task.source_mapping
+    if mapping is None or not mapping.evidence:
+        return "未抽取到细粒度原文证据；只能依据已匹配来源章节摘要和全文谨慎生成。"
+    lines: list[str] = []
+    for span in mapping.evidence:
+        title_path = " > ".join(span.title_path)
+        line_range = ""
+        if span.start_line is not None and span.end_line is not None:
+            line_range = f"L{span.start_line}-L{span.end_line}"
+        terms = "、".join(span.matched_terms) if span.matched_terms else "无显式关键词"
+        lines.extend(
+            [
+                f"### evidence_id: {span.evidence_id}",
+                f"- section_id: {span.section_id}",
+                f"- 标题路径: {title_path}",
+                f"- 行号范围: {line_range or 'unknown'}",
+                f"- 用途: {span.usage}",
+                f"- 对应模板模块: {span.template_module}",
+                f"- 匹配词: {terms}",
+                f"- 匹配理由: {span.reason or '作为本节来源证据'}",
+                f"- 置信度: {span.confidence}",
+                "- 原文摘录:",
+                "```text",
+                span.quote.strip(),
+                "```",
+                "",
+            ]
+        )
+    return "\n".join(lines).strip()

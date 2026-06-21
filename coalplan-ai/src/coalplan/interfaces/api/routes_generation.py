@@ -33,6 +33,7 @@ def list_chapters(project_id: str, request: Request):
                 "title": task.title,
                 "status": task.status.value,
                 "source_matches": [_dump(match) for match in task.source_matches],
+                "source_mapping": _dump(task.source_mapping) if task.source_mapping else None,
                 "draft_id": task.draft_id,
                 "error_message": task.error_message,
             }
@@ -56,6 +57,7 @@ def generate_chapter(project_id: str, node_id: str, request: Request):
             markdown=draft.markdown,
             draft_path=draft.artifact_path,
             source_matches=[_dump(match) for match in task.source_matches] if task else [],
+            source_mapping=_dump(task.source_mapping) if task and task.source_mapping else None,
             version=_selected_version(request, project_id, node_id),
         )
     except KeyError as exc:
@@ -90,6 +92,7 @@ def get_chapter(project_id: str, node_id: str, request: Request):
             markdown=markdown,
             draft_path=path,
             source_matches=[_dump(match) for match in task.source_matches],
+            source_mapping=_dump(task.source_mapping) if task.source_mapping else None,
             version=version,
         )
     except KeyError as exc:
