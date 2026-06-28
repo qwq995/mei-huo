@@ -19,6 +19,7 @@ from coalplan.infrastructure.storage.local_artifact_repository import LocalArtif
 from coalplan.infrastructure.templates.markdown_template_loader import MarkdownTemplateLoader
 from coalplan.interfaces.api.routes_artifacts import router as artifacts_router
 from coalplan.interfaces.api.routes_generation import router as generation_router
+from coalplan.interfaces.api.routes_pattern_library import router as pattern_library_router
 from coalplan.interfaces.api.routes_projects import router as projects_router
 from coalplan.interfaces.api.routes_templates import router as templates_router
 from coalplan.interfaces.api.routes_workspace import router as workspace_router
@@ -42,6 +43,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(generation_router)
     app.include_router(artifacts_router)
     app.include_router(workspace_router)
+    app.include_router(pattern_library_router)
     return app
 
 

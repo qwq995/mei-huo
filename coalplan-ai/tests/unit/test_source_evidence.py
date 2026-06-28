@@ -48,6 +48,45 @@ class SourceEvidenceTest(unittest.TestCase):
         self.assertTrue(any(item.start_line is not None and item.end_line is not None for item in evidence))
         self.assertTrue(any(any("注水" in term for term in item.matched_terms) for item in evidence))
 
+    def test_extra_policy_terms_guide_evidence_selection(self) -> None:
+        node = TemplateNode(
+            id="node_method",
+            title="施工方案",
+            level=3,
+            source_rules=["依据投标文件编写"],
+            auto_fill=["组织施工方法"],
+            manual_fill=[],
+        )
+        section = MarkdownSection(
+            id="sec_method",
+            title_path=["投标文件", "主要施工方法"],
+            level=2,
+            content="\n".join(
+                [
+                    "施工方案应结合现场条件组织实施。",
+                    "",
+                    "注水作业的控制参数包括压力、流量和持续时间，施工过程中应连续记录并根据火区反馈调整。",
+                ]
+            ),
+            source_file="bid.md",
+            start_line=1,
+            end_line=3,
+        )
+        match = SourceMappingMatch(section_id="sec_method", usage="method", reason="matched by policy", confidence=0.8)
+
+        evidence = build_source_evidence(
+            node=node,
+            matches=[match],
+            sections=[section],
+            max_per_section=1,
+            extra_terms=["控制参数", "压力", "流量"],
+        )
+
+        self.assertEqual(1, len(evidence))
+        self.assertIn("控制参数包括压力、流量", evidence[0].quote)
+        self.assertEqual("policy_context", evidence[0].template_module)
+        self.assertTrue({"控制参数", "压力", "流量"}.intersection(evidence[0].matched_terms))
+
 
 if __name__ == "__main__":
     unittest.main()

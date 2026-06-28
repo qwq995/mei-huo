@@ -29,6 +29,12 @@
 原文文段映射表（模板要求 -> 输入文档证据）：
 {source_evidence_map}
 
+required_source_facts（必须优先写入生成正文的原文事实）：
+{required_source_facts}
+
+quality_feedback_required_facts（质量审计要求本次必须承接的事实）：
+{quality_feedback_required_facts}
+
 已确认来源章节全文：
 {selected_source_sections}
 
@@ -56,6 +62,8 @@
 
 正文写作规则：
 - 优先依据“原文文段映射表”组织正文；涉及项目事实、工程量、工艺参数、质量安全要求时，应从 evidence_id 对应原文摘录中取材。
+- `required_source_facts` 中列出的数字、单位、日期、规范编号、施工参数和工艺控制点必须优先写入“生成正文”；确因章节范围不适用而不写时，必须在“人工补充需补充”说明原因。
+- `quality_feedback_required_facts` 来自上一轮质量审计和 trace 诊断；若当前来源章节支持，必须写入“生成正文”，确属本章不适用时必须在“人工补充需补充”逐条说明。
 - “主要来源摘要”中优先写出 evidence_id、section_id、标题路径和依据摘要，便于追溯每个小章节对应的原文段落。
 - “生成正文”必须是可直接进入施工组织设计的小章节正文，不要写“系统依据”“可整理为”等流程说明。
 - 优先写成完整段落；需要表达工程量、范围、工艺、控制目标时可使用表格或条列。

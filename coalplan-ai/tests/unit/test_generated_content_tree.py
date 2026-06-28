@@ -50,6 +50,8 @@ class GeneratedContentTreeTest(unittest.TestCase):
         self.assertEqual("ev_111111111111", source_summary.source_links[0].evidence_id)
         flow = next(node for node in flat if node.title == "注水流程")
         self.assertTrue(any(link.section_id == "sec_222222222222" for link in flow.source_links))
+        self.assertEqual("covered", flow.source_status)
+        self.assertEqual([], flow.mapping_issues)
 
     def test_replace_content_node_markdown_creates_updated_markdown(self) -> None:
         markdown = """# 注水工程施工
@@ -105,6 +107,28 @@ Source-based paragraph.
 
         self.assertTrue(flow.source_links)
         self.assertEqual("sec_333333333333", flow.source_links[0].section_id)
+        self.assertIn(flow.source_status, {"covered", "weak"})
+        self.assertEqual([], flow.mapping_issues)
+
+    def test_marks_factual_subsection_without_source_link_as_missing(self) -> None:
+        markdown = """# 注水工程施工
+
+## 生成正文
+### 注水流程
+注水施工采用分区分孔实施，施工过程中应控制压力、流量和记录。
+
+## 人工补充需补充
+- 【需人工补充：现场复核记录】
+"""
+        tree = build_generated_content_tree(node_id="node_inject", title="注水工程施工", markdown=markdown)
+        flat = _flatten(tree.nodes)
+        flow = next(node for node in flat if node.title == "注水流程")
+        manual = next(node for node in flat if node.title == "人工补充需补充")
+
+        self.assertEqual("missing", flow.source_status)
+        self.assertIn("no_source_link_for_factual_content", flow.mapping_issues)
+        self.assertEqual("not_required", manual.source_status)
+        self.assertEqual([], manual.mapping_issues)
 
 
 def _flatten(nodes):

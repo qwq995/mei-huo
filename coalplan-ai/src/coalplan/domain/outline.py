@@ -16,9 +16,20 @@ class TemplateOutlineNode(BaseModel):
     target_word_count: int | None = None
 
 
+class OutlineGenerationStep(BaseModel):
+    step_id: str
+    level: int
+    parent_node_id: str | None = None
+    node_ids: list[str] = Field(default_factory=list)
+    source_section_ids: list[str] = Field(default_factory=list)
+    description: str = ""
+
+
 class TemplateOutlinePlan(BaseModel):
     template_id: str
+    plan_source: str = "ai_plan"
     nodes: list[TemplateOutlineNode] = Field(default_factory=list)
+    generation_steps: list[OutlineGenerationStep] = Field(default_factory=list)
     artifact_json_path: str | None = None
     artifact_markdown_path: str | None = None
 

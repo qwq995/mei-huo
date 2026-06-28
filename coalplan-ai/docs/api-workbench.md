@@ -1,117 +1,51 @@
-# CoalPlan AI 工作台接口文档
+# CoalPlan AI 工作台接口文档（流水线版）
 
-本文档对应当前 FastAPI 后端。默认服务地址为 `http://127.0.0.1:8010`，交互式 Swagger 为 `http://127.0.0.1:8010/docs`。
+默认后端地址：`http://127.0.0.1:8010`  
+Swagger：`http://127.0.0.1:8010/docs`
 
-## 基本约定
+本工作台按“模板选择 -> 投标输入 -> 切章目录 -> 项目目录 -> 字数控制 -> 逐章生成 -> 版本审阅 -> 合并交付”的流水线组织。质量门禁主要用于给出下一步建议，最终是否保留、修改、重生成由用户决定。
 
-- `project_id`：项目 ID，创建项目后由后端返回。
-- `node_id`：项目目录节点 ID，来自 `GET /projects/{project_id}/outline-nodes`。
-- `section_id`：输入投标 Markdown 切分后的来源章节 ID。
-- 第一阶段核心输入为 Markdown；DOCX/PDF 转 Markdown 属于前置工具流程。
-- 大文件、章节产物、prompt trace 等落盘到 artifact 目录；项目、目录、补充材料、附件记录、版本选择等状态进入 SQLite。
-- 附件第一版只保存文件和说明，不做视觉识别；生成时会把附件说明和文件引用插入 prompt。
-
-## 1. 模板接口
+## 1. 模板与项目
 
 ### `GET /templates`
 
-列出本地模板陈列。
-
-返回示例：
-
-```json
-[
-  {
-    "template_id": "coal_fire",
-    "name": "火区治理施工组织设计模板",
-    "path": "src/coalplan/assets/templates/coal_fire_template.md"
-  }
-]
-```
+列出本地模板陈列，用于前端模板选择。
 
 ### `GET /templates/{template_id}`
 
-查看指定模板目录树和四模块。
+查看模板目录树与四模块配置。常用模板包括：
 
-主要字段：
-
-- `template_id`
-- `name`
-- `nodes[]`
-  - `id`
-  - `title`
-  - `level`
-  - `source_rules`
-  - `auto_fill`
-  - `manual_fill`
-  - `special_notes`
-  - `target_word_count`
-  - `children`
-
-### `GET /projects/{project_id}/template-tree`
-
-查看某个项目当前加载的模板树。
-
-## 2. 项目接口
+- `coal_fire`：煤火治理施工组织设计模板
+- `hydro_diversion_slope`：水电泄洪/边坡类施工组织设计模板
 
 ### `POST /projects`
 
 创建项目。
 
-请求：
-
 ```json
 {
-  "name": "宁夏煤火北一火区演示",
-  "template_id": "coal_fire"
-}
-```
-
-返回：
-
-```json
-{
-  "id": "project_xxx",
-  "project_id": "project_xxx",
-  "name": "宁夏煤火北一火区演示",
-  "template_id": "coal_fire",
-  "source_document_count": 0,
-  "section_count": 0,
-  "run_count": 0
+  "name": "拉哇水电演示项目",
+  "template_id": "hydro_diversion_slope"
 }
 ```
 
 ### `GET /projects`
 
-列出所有未删除项目。
+分页/列表查看项目。
 
 ### `GET /projects/{project_id}`
 
-查看项目摘要。
+查看项目摘要，包括模板、输入文档数量、切章数量、生成次数。
 
 ### `DELETE /projects/{project_id}?keep_artifacts=true`
 
-删除数据库中的项目记录。当前 `keep_artifacts` 作为接口参数保留，默认不清理本地 artifact 目录。
+删除项目数据库记录。`keep_artifacts=true` 时保留本地落盘文件。
 
-### `POST /projects/{project_id}/template`
-
-切换项目模板。
-
-请求：
-
-```json
-{
-  "template_id": "hydro_diversion_slope"
-}
-```
-
-## 3. 输入文档与来源目录
+## 2. 投标输入与来源目录
 
 ### `POST /projects/{project_id}/bid-markdown`
 
-上传投标 Markdown。后端会保存原文、规范化、切分章节、生成来源目录，并持久化到本地 artifact 和数据库。
-
-请求：
+上传投标技术文件 Markdown。后端会规范化、切章、生成来源目录并持久化。
 
 ```json
 {
@@ -120,425 +54,165 @@
 }
 ```
 
-主要落盘结果：
+落盘产物：
 
-- `.coalplan-data/artifacts/{project_id}/inputs/bid.md`
-- `.coalplan-data/artifacts/{project_id}/inputs/bid.normalized.md`
-- `.coalplan-data/artifacts/{project_id}/inputs/sections/*.md`
-- `.coalplan-data/artifacts/{project_id}/inputs/sections.json`
-- `.coalplan-data/artifacts/{project_id}/inputs/toc.json`
-- `.coalplan-data/artifacts/{project_id}/inputs/toc.md`
+- `inputs/bid.md`
+- `inputs/bid.normalized.md`
+- `inputs/sections/*.md`
+- `inputs/sections.json`
+- `inputs/toc.json`
+- `inputs/toc.md`
 
 ### `POST /projects/{project_id}/normalize`
 
-兼容接口。当前上传 Markdown 时已自动规范化；该接口只检查项目已有切章。
+兼容接口。当前上传 Markdown 后已经自动完成规范化和切章。
 
 ### `GET /projects/{project_id}/source-toc`
 
-查看输入文档切章目录。
-
-返回：
-
-```json
-{
-  "items": [
-    {
-      "section_id": "sec_001",
-      "title_path": ["工程概况"],
-      "level": 2,
-      "start_line": 1,
-      "end_line": 20,
-      "keywords": [],
-      "char_count": 500,
-      "snippet": "本项目位于..."
-    }
-  ],
-  "artifact_json_path": ".../toc.json",
-  "artifact_markdown_path": ".../toc.md"
-}
-```
+查看输入文档切章目录。每个条目包含 `section_id`、`title_path`、`level`、`char_count`、`snippet`。
 
 ### `GET /projects/{project_id}/sections/{section_id}`
 
-查看单个来源章节全文。
+查看某个来源章节全文，供追溯来源、人工审阅和调试提示词。
+
+## 3. 项目目录与生成前控制
 
 ### `POST /projects/{project_id}/directory`
 
-生成基础项目目录、项目概况、项目级可编辑目录节点和章节任务。该接口优先保证“目录可用”，不会因为 AI 目录规划失败而阻塞用户继续编辑。
+生成项目基础目录：抽取项目概况、复制模板为项目可编辑目录、创建章节任务。
 
-返回：
+### `GET /projects/{project_id}/template-tree`
 
-```json
-{
-  "project": {},
-  "template": {},
-  "source_toc": {},
-  "outline": {},
-  "chapter_tasks": [],
-  "profile_status": "ready",
-  "outline_status": "not_run",
-  "outline_source": "template",
-  "warnings": [
-    "已生成基础模板目录。可继续手动编辑，或点击 AI 优化目录生成可确认的修改建议。"
-  ]
-}
-```
-
-字段说明：
-
-- `profile_status`：`ready | not_ready`。
-- `outline_status`：`not_run | planned`。
-- `outline_source`：`template | ai_plan`。
-- `warnings`：给前端展示的用户友好提示。
-
-### `GET /projects/{project_id}/directory`
-
-查看项目目录生成结果、来源目录、模板树和章节任务。
-
-### `GET /projects/{project_id}/profile`
-
-查看项目概况抽取结果。
-
-### `GET /projects/{project_id}/outline`
-
-查看 AI 规划的目录四模块结果。
-
-## 4. 项目目录编辑接口
-
-项目目录生成后会复制到 `project_outline_nodes`，用户编辑的是项目自己的目录，不会修改模板原文件。
+查看当前项目使用的模板树。
 
 ### `GET /projects/{project_id}/outline-nodes`
 
-列出项目可编辑目录节点。
+查看项目可编辑目录。前端目录树以这里为准，而不是直接读取模板。
 
 ### `POST /projects/{project_id}/outline-nodes`
 
 新增目录节点。
 
-请求：
-
-```json
-{
-  "title": "安全文明施工补充措施",
-  "parent_id": "node_abc",
-  "level": 3,
-  "sort_order": 20,
-  "enabled": true,
-  "source_rules": ["投标文件安全管理章节"],
-  "auto_fill": ["归纳安全管理制度"],
-  "manual_fill": ["【需人工补充：现场安全负责人和审批记录。】"],
-  "special_notes": [],
-  "target_word_count": 800
-}
-```
-
 ### `PATCH /projects/{project_id}/outline-nodes/{node_id}`
 
-修改目录节点。请求体可只传需要修改的字段。
+修改目录节点，可更新标题、父节点、排序、启用状态、目标字数和四模块：
 
-```json
-{
-  "title": "1.1 工程概况",
-  "enabled": true,
-  "source_rules": ["工程概况", "治理范围"],
-  "auto_fill": ["归纳项目位置、范围和施工内容"],
-  "manual_fill": ["【需人工补充：合同工期。】"],
-  "special_notes": ["火区边界以复勘成果为准"],
-  "target_word_count": 1200
-}
-```
-
-`target_word_count` 为章节目标字数，可传 `null` 清空。单章生成时会按目标字数控制详略，但仍以真实来源为准，不得为了凑字数编造参数。
+- `source_rules`：主要来源
+- `auto_fill`：自动补充
+- `manual_fill`：人工补充需补充
+- `special_notes`：特殊备注
 
 ### `DELETE /projects/{project_id}/outline-nodes/{node_id}`
 
 删除目录节点。
 
-### `POST /projects/{project_id}/outline/propose-ai-change`
+### `POST /projects/{project_id}/outline/pre-generation-refine`
 
-创建目录 AI 修改建议，只生成 proposal，不直接覆盖目录。
-
-请求：
+生成前目录精修建议。只创建 proposal，不直接覆盖用户目录。
 
 ```json
 {
-  "suggestion": "把安全文明施工拆成安全管理、环保水保、应急处置三个小节。"
-}
-```
-
-### `POST /projects/{project_id}/outline/ai-plan`
-
-基于项目概况、投标目录和模板树生成 AI 目录优化建议。该接口也只创建 proposal，不直接覆盖当前项目目录。
-
-请求：
-
-```json
-{
-  "suggestion": "请基于项目概况、投标目录和模板四模块优化项目目录。"
+  "mode": "balanced",
+  "use_local_corpus": true,
+  "use_human_reference": false,
+  "project_type": "auto"
 }
 ```
 
 ### `POST /projects/{project_id}/outline/proposals/{proposal_id}/apply`
 
-确认应用目录 proposal。
+确认并应用目录 proposal。应用后目录节点和章节任务同步更新。
 
 ### `POST /projects/{project_id}/outline/word-counts/estimate`
 
-根据参考施组 Markdown 或章节类型为项目目录批量估算目标字数，并写回项目自己的可编辑目录。
+依据参考施组或目录结构估算各章节目标字数。用户可随后手动修改。
 
-请求：
+## 4. 流水线状态与下一步建议
+
+### `GET /projects/{project_id}/pipeline-blueprint`
+
+查看系统内置的生成流水线定义，适合前端展示“总体流程”。
+
+### `GET /projects/{project_id}/pipeline-actions`
+
+查看当前项目建议动作列表，包括目录修补、拆小节、生成、修订、人工补充等。
+
+### `GET /projects/{project_id}/generation-readiness`
+
+查看每个目录节点是否可生成、是否需拆分、是否需人工补充、是否已有选中版本。
+
+### `POST /projects/{project_id}/generation-readiness/execute`
+
+批量执行 readiness 中可自动执行的动作。默认跳过需要人工确认的事项。
 
 ```json
 {
-  "reference_markdown": "# 施工组织设计\n\n## 1.1 工程概况\n..."
+  "group_id": null,
+  "include_user_confirmation": false,
+  "limit": 10
 }
 ```
 
-返回：
+### `GET /projects/{project_id}/current-execution-window`
 
-```json
-{
-  "project_id": "project_xxx",
-  "reference_supplied": true,
-  "estimates": [
-    {
-      "node_id": "tplnode_xxx",
-      "title": "1.1 工程概况",
-      "target_word_count": 1200,
-      "method": "reference_title_match",
-      "matched_reference_title": "1.1 工程概况",
-      "reference_word_count": 1184
-    }
-  ],
-  "nodes": []
-}
-```
+查看当前最应该处理的流水线窗口。若存在待确认 proposal，会优先提示用户审阅。
 
-落盘追溯文件：
-
-- `outline/word_count_targets.json`
-- `outline/word_count_targets.md`
-
-生成 prompt 会读取该字段，并要求模型在目标字数约 `85%-120%` 范围内控制详略；来源不足时仍必须保留人工补充占位，不得为了凑字数编造参数。
-
-## 5. 章节工作区接口
+## 5. 章节工作区、补充材料与附件
 
 ### `GET /projects/{project_id}/chapters/{node_id}/workspace`
 
-查看某章工作区，包含：
-
-- `outline_node`
-- `supplements`
-- `attachments`
-- `versions`
-- `selected_version_id`
-- `proposals`
-
-`versions` 中每个版本会附带生成正文目录树：
-
-- `content_tree`：由版本 Markdown 标题解析出的正文树，支持生成后按小节查看、映射与修改。
-- `content_tree_path`：对应落盘 JSON artifact 路径。
+查看单章工作区：目录节点、补充材料、附件、版本、选中版本和待确认 proposal。
 
 ### `POST /projects/{project_id}/chapters/{node_id}/supplements`
 
-新增章节补充材料。
-
-请求：
+保存章节补充材料。刷新页面后仍保留。
 
 ```json
 {
   "kind": "text",
   "title": "现场补充要求",
-  "content": "本章必须写入临时供水布置要求。",
-  "must_include": true,
-  "sort_order": 1
+  "content": "本章需强调高原冬季施工组织。",
+  "must_include": true
 }
 ```
-
-`kind` 建议值：
-
-- `text`：普通文本
-- `table`：Markdown 表格
-- `note`：写作要求或人工说明
 
 ### `PATCH /projects/{project_id}/chapters/{node_id}/supplements/{supplement_id}`
 
-修改章节补充材料。
+修改补充材料。
 
 ### `DELETE /projects/{project_id}/chapters/{node_id}/supplements/{supplement_id}`
 
-删除章节补充材料。
+删除补充材料。
 
 ### `POST /projects/{project_id}/chapters/{node_id}/attachments`
 
-上传章节附件。请求类型为 `multipart/form-data`。
+上传附件并保存说明。第一版不做图片视觉理解，只把附件说明和文件引用带入 prompt。
 
-字段：
-
-- `file`：附件文件
-- `description`：附件说明
-
-第一版生成时只使用 `description` 和文件路径，不解析图片内容。
-
-### `DELETE /projects/{project_id}/chapters/{node_id}/attachments/{attachment_id}`
-
-删除附件记录。
-
-## 6. 章节生成、版本与正文树接口
-
-### `GET /projects/{project_id}/chapters`
-
-查看当前最新 generation run 的章节任务列表。
+## 6. 逐章生成与版本管理
 
 ### `POST /projects/{project_id}/chapters/{node_id}/generate`
 
-单章生成。流程为：
+生成单章新版本。流程为：来源映射 -> 证据抽取 -> 构造 prompt -> LLM 生成 -> 格式/来源审计 -> 保存版本。
 
-1. 依据当前目录节点和来源目录做来源映射。
-2. 对已匹配章节做后端细粒度证据抽取，生成 `evidence_id / section_id / 标题路径 / 行号范围 / 原文摘录 / 对应模板模块 / 使用方式`。
-3. 把“原文文段映射表”和映射到的来源章节全文加入 prompt。
-4. 注入项目概况、目录四模块、章节目标字数、章节补充材料、附件说明和当前选中历史版本。
-5. LLM 生成 Markdown。
-6. 校验格式。
-7. 创建新的 `chapter_versions` 版本并设为选中。
-8. 从该版本 Markdown 解析生成正文目录树，并保存到 `chapters/{node_id}/versions/{version_id}.content_tree.json`。
+### `POST /projects/{project_id}/chapters/{node_id}/children/generate`
 
-落盘追溯文件：
-
-- `mapping/{node_id}.json`：章节级来源映射与文段级 evidence。
-- `mapping/{node_id}.evidence.md`：便于人工查看的原文文段映射表。
-- `chapters/{node_id}.md`：本次章节生成结果。
-- `chapters/{node_id}/versions/{version_id}.content_tree.json`：生成正文目录树，包含正文小节与来源证据映射。
-
-返回：
-
-```json
-{
-  "node_id": "node_xxx",
-  "title": "1.1 工程概况",
-  "status": "passed",
-  "markdown": "# 1.1 工程概况\n...",
-  "draft_path": ".../chapters/node_xxx.md",
-  "source_matches": [],
-  "source_mapping": {
-    "node_id": "node_xxx",
-    "matches": [
-      {
-        "section_id": "sec_xxx",
-        "title_path": ["施工组织", "工程概况"],
-        "usage": "fact",
-        "reason": "与工程概况相关",
-        "confidence": 0.86,
-        "evidence_ids": ["ev_xxx"]
-      }
-    ],
-    "evidence": [
-      {
-        "evidence_id": "ev_xxx",
-        "section_id": "sec_xxx",
-        "start_line": 42,
-        "end_line": 44,
-        "template_module": "main_sources",
-        "quote": "原文摘录..."
-      }
-    ]
-  },
-  "version": {}
-}
-```
-
-### `GET /projects/{project_id}/chapters/{node_id}`
-
-查看单章当前结果。优先返回选中版本；没有选中版本时返回最近 draft。
-
-### `POST /projects/{project_id}/generate`
-
-全量逐章生成。每个章节都会创建版本。
-
-### `POST /projects/{project_id}/merge`
-
-合并最终 Markdown。合并时优先使用每章 `selected_version_id` 对应的版本。
-
-### `GET /projects/{project_id}/artifacts/final.md`
-
-查看最终合并 Markdown，返回 `text/plain`。
+生成某个父节点下的子章节，适合目录扩细后的分支生成。
 
 ### `POST /projects/{project_id}/chapters/{node_id}/versions`
 
-手动保存当前编辑内容为新版本。
-
-请求：
-
-```json
-{
-  "title": "1.1 工程概况",
-  "markdown": "# 1.1 工程概况\n\n## 主要来源摘要\n...",
-  "select": true
-}
-```
+用户手动保存 Markdown 为新版本，不覆盖旧版本。
 
 ### `GET /projects/{project_id}/chapters/{node_id}/versions`
 
-列出某章版本。
+查看章节版本列表。
 
 ### `GET /projects/{project_id}/chapters/{node_id}/versions/{version_id}`
 
-查看某章指定版本。
-
-返回版本对象包含：
-
-```json
-{
-  "id": "ver_xxx",
-  "version_no": 1,
-  "source_type": "ai_generate",
-  "markdown": "# 1.1 工程概况\n...",
-  "content_tree_path": "chapters/node_xxx/versions/ver_xxx.content_tree.json",
-  "content_tree": {
-    "version_id": "ver_xxx",
-    "node_id": "node_xxx",
-    "title": "1.1 工程概况",
-    "nodes": []
-  }
-}
-```
-
-### `GET /projects/{project_id}/chapters/{node_id}/versions/{version_id}/content-tree`
-
-查看某个版本的生成正文目录树。目录树由章节 Markdown 标题解析得到，每个小节节点包含：
-
-- `id`：正文小节节点 ID。
-- `title / level / title_path`：小节标题与层级路径。
-- `start_line / end_line`：该小节在版本 Markdown 中的行号范围。
-- `markdown / body`：该小节原始 Markdown 与正文。
-- `source_links`：小节映射到的 `section_id / evidence_id`，用于追溯来源。
-- `children`：子小节。
-
-### `PATCH /projects/{project_id}/chapters/{node_id}/versions/{version_id}/content-nodes/{content_node_id}`
-
-按生成正文目录树的小节节点修改内容。后端不会覆盖原版本，而是创建一个 `source_type=subsection_edit` 的新版本，并重新生成该新版本的 `content_tree`。
-
-请求：
-
-```json
-{
-  "markdown": "## 修改后的小节标题\n\n修改后的正文...",
-  "select": true
-}
-```
-
-典型用法：
-
-1. 前端读取 `content-tree` 并展示版本内的小节树。
-2. 用户选择某个小节节点，只编辑该节点对应的 Markdown。
-3. 调用本接口保存为新版本。
-4. 合并最终文档时仍只使用用户选中的版本。
+查看指定章节版本。
 
 ### `PATCH /projects/{project_id}/chapters/{node_id}/selected-version`
 
-选择某个版本作为最终合并使用版本。
-
-请求：
+选择用于最终合并的版本。
 
 ```json
 {
@@ -548,62 +222,65 @@
 
 ### `POST /projects/{project_id}/chapters/{node_id}/propose-ai-edit`
 
-创建章节 AI 修改建议。只生成 proposal，不直接覆盖版本。
-
-请求：
-
-```json
-{
-  "suggestion": "补强安全措施，语气更像正式施工组织设计。",
-  "base_markdown": "# 1.1 工程概况\n..."
-}
-```
-
-若不传 `base_markdown`，后端会读取当前选中版本。
+根据用户建议生成 AI 修改 proposal，不直接覆盖版本。
 
 ### `POST /projects/{project_id}/chapters/{node_id}/proposals/{proposal_id}/apply`
 
-确认应用章节 AI 修改建议。应用后会创建新版本并设为选中。
+确认 AI 修改 proposal，并保存为新章节版本。
 
-## 7. 推荐前端流程
+## 7. 正文小节树与审计
 
-1. `GET /templates`：加载模板列表。
-2. `POST /projects`：创建项目。
-3. `POST /projects/{id}/bid-markdown`：上传标准 Markdown 投标文件。
-4. `POST /projects/{id}/directory`：生成基础目录、项目概况和章节任务。
-5. `POST /projects/{id}/outline/word-counts/estimate`：按参考施组或章节类型估算目录字数。
-6. `GET /projects/{id}/outline-nodes`：展示并允许用户编辑目录、四模块、目标字数和启停状态。
-7. `GET /projects/{id}/chapters/{node_id}/workspace`：进入章节工作区。
-8. 用户保存补充材料或附件说明。
-9. `POST /projects/{id}/chapters/{node_id}/generate`：单章生成，生成后形成版本和正文小节树。
-10. `GET /projects/{id}/chapters/{node_id}/versions/{version_id}/content-tree`：查看正文小节树与来源映射。
-11. `PATCH /projects/{id}/chapters/{node_id}/versions/{version_id}/content-nodes/{content_node_id}`：按小节编辑并保存为新版本。
-12. 用户手动编辑整章时用 `POST /versions` 保存新版本。
-13. 用户选择版本时用 `PATCH /selected-version`。
-14. 全部章节完成后 `POST /merge`。
-15. `GET /artifacts/final.md`：预览最终文档。
+### `GET /projects/{project_id}/chapters/{node_id}/versions/{version_id}/content-tree`
 
-## 8. 持久化与追溯位置
+查看生成正文被拆分后的内容树。用户可按小节审阅来源映射和修改建议。
 
-默认位置：
+### `POST /projects/{project_id}/chapters/{node_id}/versions/{version_id}/content-nodes/{content_node_id}/revision-action`
 
-```text
-C:\Users\Lenovo\Documents\煤火\coalplan-ai\.coalplan-data
-```
+对正文小节执行修订动作，例如重写小节、重新映射来源、拆分小节或请求人工补充。
 
-关键文件：
+### `GET /projects/{project_id}/chapters/{node_id}/versions/{version_id}/generation-metadata`
 
-- `.coalplan-data/coalplan.db`：SQLite 数据库。
-- `.coalplan-data/artifacts/{project_id}/inputs/bid.md`：上传原始 Markdown。
-- `.coalplan-data/artifacts/{project_id}/inputs/bid.normalized.md`：规范化 Markdown。
-- `.coalplan-data/artifacts/{project_id}/inputs/sections/*.md`：切分章节。
-- `.coalplan-data/artifacts/{project_id}/inputs/toc.json`：来源目录。
-- `.coalplan-data/artifacts/{project_id}/profile/project_profile.json`：项目概况。
-- `.coalplan-data/artifacts/{project_id}/outline/generated_outline.json`：目录规划。
-- `.coalplan-data/artifacts/{project_id}/outline/word_count_targets.json`：字数估算结果。
-- `.coalplan-data/artifacts/{project_id}/mapping/{node_id}.json`：单章来源映射。
-- `.coalplan-data/artifacts/{project_id}/mapping/{node_id}.evidence.md`：来源证据摘录表。
-- `.coalplan-data/artifacts/{project_id}/chapters/{node_id}.md`：单章生成 Markdown。
-- `.coalplan-data/artifacts/{project_id}/chapters/{node_id}/versions/{version_id}.content_tree.json`：正文小节树。
-- `.coalplan-data/artifacts/{project_id}/artifacts/final.md`：最终合并 Markdown。
-- `.coalplan-data/llm-traces`：LLM prompt/response 追溯记录。
+查看生成元数据与本地施组写作模式吸收情况。
+
+### `POST /projects/{project_id}/chapters/{node_id}/versions/{version_id}/generation-metadata/revision-action`
+
+依据生成元数据执行建议动作。门控是建议，不替代用户选择。
+
+### `GET /projects/{project_id}/chapters/{node_id}/versions/{version_id}/evidence-audit`
+
+查看证据利用审计，包括遗漏的高价值事实、未使用证据和建议动作。
+
+### `POST /projects/{project_id}/chapters/{node_id}/versions/{version_id}/evidence-audit/revision-action`
+
+依据证据审计执行修订动作。
+
+## 8. 合并与导出
+
+### `POST /projects/{project_id}/merge`
+
+合并所有用户选中的章节版本，生成最终 Markdown。未选中版本不会进入合并。
+
+### `GET /projects/{project_id}/artifacts/final.md`
+
+查看最终 Markdown。
+
+## 9. 前端推荐展示
+
+前端首页应把状态浓缩成流水线卡片：
+
+1. 模板与项目：是否已选模板、是否创建项目。
+2. 投标输入：是否上传 Markdown、切章数量。
+3. 目录精修：项目目录节点数、待确认 proposal。
+4. 字数控制：已设置目标字数的节点数与总目标字数。
+5. 生成准备：readiness 状态、可自动执行批次、需人工确认数量。
+6. 逐章生成：已选中版本的章节数、当前章节版本数。
+7. 审计修订：证据/组织模式审计是否提示修订。
+8. 合并交付：是否已生成 final.md。
+
+## 10. 运行约定
+
+- 事实只能来自输入文档 `section_id/evidence_id`、用户补充或人工占位。
+- 本地施组目录库只作结构参考，不作项目事实来源。
+- 质量门禁用于提示下一步，不应强制替用户决定最终质量。
+- 每次 LLM 调用应保存 prompt/response trace，便于追溯。
+- 章节 AI 生成、AI 修改、用户手动编辑都创建新版本。

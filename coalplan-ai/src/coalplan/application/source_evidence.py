@@ -19,10 +19,17 @@ def build_source_evidence(
     sections: list[MarkdownSection],
     max_total: int = 14,
     max_per_section: int = 4,
+    extra_terms: list[str] | None = None,
 ) -> list[SourceEvidenceSpan]:
     section_by_id = {section.id: section for section in sections}
     terms_by_module = _terms_by_module(node)
-    fallback_terms = _ordered_terms([node.title, *node.source_rules, *node.auto_fill, *node.manual_fill, *node.special_notes])
+    policy_terms = _ordered_terms(extra_terms or [])
+    if policy_terms:
+        terms_by_module["policy_context"] = policy_terms
+    fallback_terms = _merge_ordered(
+        _ordered_terms([node.title, *node.source_rules, *node.auto_fill, *node.manual_fill, *node.special_notes]),
+        policy_terms,
+    )
     output: list[SourceEvidenceSpan] = []
     seen_quotes: set[str] = set()
 
@@ -222,6 +229,15 @@ def _ordered_terms(texts: list[str]) -> list[str]:
             if term not in ordered:
                 ordered.append(term)
     return ordered[:80]
+
+
+def _merge_ordered(*groups: list[str]) -> list[str]:
+    merged: list[str] = []
+    for group in groups:
+        for item in group:
+            if item not in merged:
+                merged.append(item)
+    return merged[:100]
 
 
 def _extract_terms(text: str) -> list[str]:

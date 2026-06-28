@@ -27,7 +27,9 @@ API 文档默认在 `http://127.0.0.1:8010/docs`。
 
 更完整的接口与工作台使用说明见：
 
+- `docs/stable-convergence-v0.1.md` - stable v0.1 demo entry and guardrail checklist.
 - `docs/api-workbench.md`
+- `docs/v0.1-runbook.md`
 - `docs/run-with-deepseek.md`
 
 ## Run Web

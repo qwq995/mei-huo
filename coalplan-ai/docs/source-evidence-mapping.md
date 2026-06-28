@@ -119,13 +119,29 @@
 - 保留小节标题、层级、标题路径、行号范围和原始 Markdown。
 - 从正文中的 `evidence_id`、`section_id` 直接建立来源链接。
 - 当正文没有显式写出证据 ID 时，使用标题与正文关键词回退匹配本章 `source_mapping.evidence`。
+- 为每个小节标注 `source_status`：`covered` 表示来源明确，`weak` 表示只有低置信关键词匹配，`missing` 表示小节像事实正文但没有来源链接，`not_required` 表示人工补充/特殊备注或空正文不要求来源。
+- `mapping_issues` 会记录小节级问题，例如 `no_source_link_for_factual_content`，前端可据此提示用户补来源、重映射或局部重写。
 - 支持通过 `PATCH /projects/{project_id}/chapters/{node_id}/versions/{version_id}/content-nodes/{content_node_id}` 只替换某个正文小节，并保存为新的 `subsection_edit` 版本。
 
 这样用户可以在单章生成后继续拆到更细的小节做来源核查、局部修改和多版本选择；最终合并仍只读取每个章节的 `selected_version_id`。
+
+## 合并前门禁
+
+`GET /projects/{project_id}/pipeline-gates` 的 `version` gate 会检查当前选中版本的 `content_tree`：
+
+- 若存在 `source_status=missing` 的事实小节，返回 warning，并统计 `selected_version_missing_source_subsections`。
+- 若存在 `source_status=weak` 的低置信小节，返回 warning，并统计 `selected_version_weak_source_subsections`。
+- 用户应先对这些小节执行补来源、重映射、局部重写或人工补充说明，再合并最终文档。
 
 ## 后续增强
 
 - 在前端章节工作区中把 evidence map 和生成正文目录树做可折叠联动展示。
 - 支持用户手动锁定或排除某条 evidence。
 - 真实 LLM 来源映射阶段可以只返回候选 section，再由后端 evidence 评分控制实际 prompt 内容，减少模型幻觉。
+
+## Revision-Aware Remapping
+
+When a chapter revision decision is `remap_sources`, `regenerate`, or `repair_format`, the retry does not reuse the same source-selection prompt. `GenerationPipeline.generate_one()` passes a `Mapping Control Context` into `map_chapter_sources` before chapter writing. This context includes local writing-pattern requirements, source-derived subtopics, required source fact types, human-only item types, and previous revision reasons or omitted facts.
+
+The mapping agent must treat this block as search guidance only. It should use it to choose better `section_id` candidates and evidence spans, but it must not treat the context itself as project evidence.
 - 后续接入向量检索时，仍保留本 evidence 数据结构，只替换候选段落评分器。

@@ -2,7 +2,19 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
-from .schemas import ChapterResponse, GenerateResponse, run_summary
+from coalplan.interfaces.api.execution_window_guard import ensure_generation_window
+
+from .schemas import (
+    ChildChapterGenerateRequest,
+    ChapterResponse,
+    GenerateResponse,
+    QualityAuditRunRequest,
+    QualityAuditTargetExecuteRequest,
+    QualityAuditTargetsExecuteRequest,
+    QualityIterationRunRequest,
+    QualityFeedbackApplyRequest,
+    run_summary,
+)
 
 router = APIRouter(tags=["generation"])
 
@@ -11,9 +23,12 @@ router = APIRouter(tags=["generation"])
 def generate_project(project_id: str, request: Request):
     pipeline = request.app.state.pipeline
     try:
+        ensure_generation_window(pipeline, project_id)
         pipeline.prepare_run(project_id)
         run = pipeline.generate_all(project_id)
         return run_summary(run)
+    except HTTPException:
+        raise
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -48,6 +63,7 @@ def list_chapters(project_id: str, request: Request):
 def generate_chapter(project_id: str, node_id: str, request: Request):
     pipeline = request.app.state.pipeline
     try:
+        ensure_generation_window(pipeline, project_id)
         draft = pipeline.generate_one(project_id, node_id)
         project = pipeline.projects.get(project_id)
         task = next((item for item in project.runs[-1].chapter_tasks if item.node_id == node_id), None)
@@ -61,6 +77,28 @@ def generate_chapter(project_id: str, node_id: str, request: Request):
             source_mapping=_dump(task.source_mapping) if task and task.source_mapping else None,
             version=_selected_version(request, project_id, node_id),
         )
+    except HTTPException:
+        raise
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/chapters/{node_id}/children/generate", response_model=dict)
+def generate_child_chapters(project_id: str, node_id: str, payload: ChildChapterGenerateRequest, request: Request):
+    pipeline = request.app.state.pipeline
+    try:
+        ensure_generation_window(pipeline, project_id)
+        return pipeline.generate_child_chapters(
+            project_id,
+            node_id,
+            recursive=payload.recursive,
+            only_pending=payload.only_pending,
+            limit=payload.limit,
+        )
+    except HTTPException:
+        raise
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -104,8 +142,138 @@ def get_chapter(project_id: str, node_id: str, request: Request):
 def merge_project(project_id: str, request: Request):
     pipeline = request.app.state.pipeline
     try:
+        ensure_generation_window(pipeline, project_id)
         run = pipeline.merge_latest(project_id)
         return run_summary(run)
+    except HTTPException:
+        raise
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/quality-feedback", response_model=dict)
+def get_quality_feedback(project_id: str, request: Request):
+    pipeline = request.app.state.pipeline
+    try:
+        feedback = pipeline.quality_feedback_plan(project_id)
+        return {"project_id": project_id, "feedback": _dump(feedback) if feedback else None}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/quality-feedback", response_model=dict)
+def apply_quality_feedback(project_id: str, payload: QualityFeedbackApplyRequest, request: Request):
+    pipeline = request.app.state.pipeline
+    try:
+        return pipeline.apply_quality_feedback_report(
+            project_id,
+            payload.report,
+            trace_diagnostics=payload.trace_diagnostics,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/quality-audit", response_model=dict)
+def run_quality_audit(project_id: str, payload: QualityAuditRunRequest, request: Request):
+    pipeline = request.app.state.pipeline
+    try:
+        return pipeline.run_quality_audit(
+            project_id,
+            source_markdown=payload.source_markdown,
+            human_reference_markdown=payload.human_reference_markdown,
+            apply_feedback=payload.apply_feedback,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/quality-audit/revision-targets", response_model=dict)
+def get_quality_audit_revision_targets(project_id: str, request: Request):
+    pipeline = request.app.state.pipeline
+    try:
+        return pipeline.quality_audit_revision_targets(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/quality-audit/revision-targets/{target_index}/execute", response_model=dict)
+def execute_quality_audit_revision_target(
+    project_id: str,
+    target_index: int,
+    payload: QualityAuditTargetExecuteRequest,
+    request: Request,
+):
+    pipeline = request.app.state.pipeline
+    try:
+        return pipeline.execute_quality_audit_revision_target(project_id, target_index, action=payload.action)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/quality-audit/revision-targets/execute", response_model=dict)
+def execute_quality_audit_revision_targets(
+    project_id: str,
+    payload: QualityAuditTargetsExecuteRequest,
+    request: Request,
+):
+    pipeline = request.app.state.pipeline
+    try:
+        return pipeline.execute_quality_audit_revision_targets(
+            project_id,
+            include_user_confirmation=payload.include_user_confirmation,
+            limit=payload.limit,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/quality-iteration", response_model=dict)
+def run_quality_iteration(project_id: str, payload: QualityIterationRunRequest, request: Request):
+    pipeline = request.app.state.pipeline
+    try:
+        return pipeline.run_quality_iteration(
+            project_id,
+            max_rounds=payload.max_rounds,
+            include_user_confirmation=payload.include_user_confirmation,
+            limit_per_round=payload.limit_per_round,
+            source_markdown=payload.source_markdown,
+            human_reference_markdown=payload.human_reference_markdown,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/quality-iteration/learning-report", response_model=dict)
+def get_quality_iteration_learning_report(project_id: str, request: Request):
+    pipeline = request.app.state.pipeline
+    try:
+        return pipeline.quality_iteration_learning_report(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/quality-feedback/outline-proposal", response_model=dict)
+def propose_quality_feedback_outline(project_id: str, request: Request):
+    pipeline = request.app.state.pipeline
+    try:
+        return pipeline.propose_quality_feedback_outline_repair(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:

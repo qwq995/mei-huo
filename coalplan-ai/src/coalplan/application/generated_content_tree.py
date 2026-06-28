@@ -9,6 +9,7 @@ from coalplan.domain.outline import SourceEvidenceSpan, SourceMappingResult
 
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+NON_FACT_TITLES = {"人工补充需补充", "特殊备注"}
 
 
 def build_generated_content_tree(
@@ -36,8 +37,10 @@ def build_generated_content_tree(
             body=markdown.strip(),
             source_links=_source_links(markdown, mapping),
         )
+        _annotate_node_source_status(root)
         tree = GeneratedContentTree(version_id=version_id, node_id=node_id, title=title, markdown_line_count=len(lines), nodes=[root])
         _carry_fallback_links(tree.nodes, fallback)
+        _annotate_tree_source_status(tree.nodes)
         return tree
 
     built: list[_MutableNode] = []
@@ -75,6 +78,7 @@ def build_generated_content_tree(
         nodes=[item.to_model() for item in built],
     )
     _carry_fallback_links(tree.nodes, fallback)
+    _annotate_tree_source_status(tree.nodes)
     return tree
 
 
@@ -127,7 +131,7 @@ class _MutableNode:
             self.children = []
 
     def to_model(self) -> GeneratedContentNode:
-        return GeneratedContentNode(
+        node = GeneratedContentNode(
             id=self.id,
             title=self.title,
             level=self.level,
@@ -139,6 +143,8 @@ class _MutableNode:
             source_links=self.source_links,
             children=[child.to_model() for child in self.children],
         )
+        _annotate_node_source_status(node)
+        return node
 
 
 def _heading_events(lines: list[str]) -> list[_HeadingEvent]:
@@ -181,6 +187,52 @@ def _carry_fallback_links(nodes: list[GeneratedContentNode], fallback_tree: Gene
         links = fallback_by_path.get(tuple(node.title_path))
         if links:
             node.source_links = links
+
+
+def _annotate_tree_source_status(nodes: list[GeneratedContentNode]) -> None:
+    for node in _walk_nodes(nodes):
+        _annotate_node_source_status(node)
+
+
+def _annotate_node_source_status(node: GeneratedContentNode) -> None:
+    if node.source_links:
+        high_confidence = any(link.confidence >= 0.65 or link.reason.startswith("explicit_") for link in node.source_links)
+        node.source_status = "covered" if high_confidence else "weak"
+        node.mapping_issues = []
+        return
+    if _node_can_skip_source(node):
+        node.source_status = "not_required"
+        node.mapping_issues = []
+        return
+    if _looks_like_factual_content(node.body or node.markdown):
+        node.source_status = "missing"
+        node.mapping_issues = ["no_source_link_for_factual_content"]
+        return
+    node.source_status = "not_required"
+    node.mapping_issues = []
+
+
+def _node_can_skip_source(node: GeneratedContentNode) -> bool:
+    if node.title in NON_FACT_TITLES:
+        return True
+    body = node.body.strip()
+    if not body:
+        return True
+    if "【需人工补充" in body:
+        return True
+    if body in {"无。", "- 无。", "无", "- 无"}:
+        return True
+    return False
+
+
+def _looks_like_factual_content(text: str) -> bool:
+    stripped = re.sub(r"\s+", "", text or "")
+    if len(stripped) < 18:
+        return False
+    if re.search(r"\d+(?:\.\d+)?\s*(?:m³/min|m3/min|m3|m³|m2|m²|mm|cm|km|m|t|kg|MPa|kPa|kN|kW|MW|%|℃|天|日|月|年|根|孔|台|套|人|项)", stripped, flags=re.I):
+        return True
+    factual_terms = ("施工", "工程", "质量", "安全", "环保", "进度", "工期", "设备", "材料", "工艺", "检查", "验收", "控制", "灌浆", "注水", "钻孔")
+    return sum(1 for term in factual_terms if term in stripped) >= 2
 
 
 def _source_links(markdown: str, mapping: SourceMappingResult | None) -> list[GeneratedContentSourceLink]:

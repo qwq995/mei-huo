@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from coalplan.application.serialization import dump_model, to_json_text
 from coalplan.domain.documents import SourceTocItem
-from coalplan.domain.outline import TemplateOutlineNode, TemplateOutlinePlan
+from coalplan.domain.outline import OutlineGenerationStep, TemplateOutlineNode, TemplateOutlinePlan
 from coalplan.domain.profile import ProjectProfile
 from coalplan.domain.templates import TemplateNode, TemplateTree, iter_template_nodes
 from coalplan.infrastructure.validation.json_contract import TemplateOutlinePlanValidator
@@ -27,12 +27,27 @@ def plan_template_outline(
         outline = TemplateOutlinePlan(**data)
     except Exception:
         outline = _fallback_outline(profile, template_tree, toc_items)
+    outline.plan_source = "ai_plan"
     outline = _clean_outline(outline, template_tree, toc_items)
     result = TemplateOutlinePlanValidator().validate(outline, template_tree, toc_items)
     if not result.passed:
         raise ValueError("; ".join(issue.message for issue in result.issues))
+    outline.generation_steps = build_outline_generation_steps(outline, template_tree)
     outline.artifact_json_path = artifacts.write_text(project_id, "outline/generated_outline.json", to_json_text(dump_model(outline)))
     outline.artifact_markdown_path = artifacts.write_text(project_id, "outline/generated_outline.md", render_outline_markdown(outline))
+    return outline
+
+
+def build_template_outline_plan(
+    *,
+    profile: ProjectProfile,
+    toc_items: list[SourceTocItem],
+    template_tree: TemplateTree,
+) -> TemplateOutlinePlan:
+    outline = _fallback_outline(profile, template_tree, toc_items)
+    outline.plan_source = "template"
+    outline = _clean_outline(outline, template_tree, toc_items)
+    outline.generation_steps = build_outline_generation_steps(outline, template_tree)
     return outline
 
 
@@ -76,8 +91,54 @@ def apply_outline_to_template_tree(template_tree: TemplateTree, outline: Templat
     return TemplateTree(id=template_tree.id, name=template_tree.name, nodes=[_apply_outline_node(node, by_id) for node in template_tree.nodes])
 
 
+def build_outline_generation_steps(outline: TemplateOutlinePlan, template_tree: TemplateTree) -> list[OutlineGenerationStep]:
+    parent_by_id = _template_parent_map(template_tree)
+    enabled_by_id = {node.node_id: node for node in outline.nodes if node.enabled}
+    grouped: dict[tuple[int, str | None], list[TemplateOutlineNode]] = {}
+    for node in outline.nodes:
+        if not node.enabled:
+            continue
+        parent_id = parent_by_id.get(node.node_id)
+        if parent_id is not None and parent_id not in enabled_by_id:
+            parent_id = None
+        grouped.setdefault((node.level, parent_id), []).append(node)
+    steps: list[OutlineGenerationStep] = []
+    for (level, parent_id), nodes in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1] or "")):
+        node_ids = [node.node_id for node in nodes]
+        source_ids: list[str] = []
+        for node in nodes:
+            for source_id in node.source_hints:
+                if source_id not in source_ids:
+                    source_ids.append(source_id)
+        step_parent = parent_id or "root"
+        steps.append(
+            OutlineGenerationStep(
+                step_id=f"outline_level_{level}_{step_parent}",
+                level=level,
+                parent_node_id=parent_id,
+                node_ids=node_ids,
+                source_section_ids=source_ids,
+                description=_outline_step_description(level=level, parent_id=parent_id, nodes=nodes),
+            )
+        )
+    return steps
+
+
 def render_outline_markdown(outline: TemplateOutlinePlan) -> str:
     lines = [f"# 生成目录规划：{outline.template_id}", ""]
+    if outline.generation_steps:
+        lines.extend(["## 分层生成步骤", ""])
+        for step in outline.generation_steps:
+            parent = step.parent_node_id or "root"
+            lines.extend(
+                [
+                    f"- `{step.step_id}`：level={step.level}，parent={parent}，nodes={', '.join(step.node_ids)}",
+                    f"  - {step.description}",
+                ]
+            )
+            if step.source_section_ids:
+                lines.append(f"  - source_hints: {', '.join(step.source_section_ids[:12])}")
+        lines.append("")
     for node in outline.nodes:
         if not node.enabled:
             continue
@@ -120,6 +181,26 @@ def _flat_template_nodes(template_tree: TemplateTree) -> list[dict]:
         }
         for node in iter_template_nodes(template_tree.nodes)
     ]
+
+
+def _template_parent_map(template_tree: TemplateTree) -> dict[str, str | None]:
+    mapping: dict[str, str | None] = {}
+
+    def visit(nodes: list[TemplateNode], parent_id: str | None) -> None:
+        for node in nodes:
+            mapping[node.id] = parent_id
+            visit(node.children, node.id)
+
+    visit(template_tree.nodes, None)
+    return mapping
+
+
+def _outline_step_description(*, level: int, parent_id: str | None, nodes: list[TemplateOutlineNode]) -> str:
+    titles = "、".join(node.title for node in nodes[:8])
+    if len(nodes) > 8:
+        titles += f" 等 {len(nodes)} 个节点"
+    parent = f"父节点 `{parent_id}` 下" if parent_id else "根层"
+    return f"{parent}第 {level} 层目录规划：{titles}"
 
 
 def _compact_toc(toc_items: list[SourceTocItem]) -> list[dict]:

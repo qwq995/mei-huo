@@ -71,6 +71,16 @@ class AIEditProposalRequest(BaseModel):
     base_markdown: str | None = None
 
 
+class RevisionActionRequest(BaseModel):
+    action: str | None = None
+
+
+class ChildChapterGenerateRequest(BaseModel):
+    recursive: bool = False
+    only_pending: bool = False
+    limit: int | None = None
+
+
 class OutlineAIProposalRequest(BaseModel):
     suggestion: str
     preview_nodes: list[dict] | None = None
@@ -78,6 +88,87 @@ class OutlineAIProposalRequest(BaseModel):
 
 class WordCountEstimateRequest(BaseModel):
     reference_markdown: str | None = None
+
+
+class PreGenerationOutlineRefineRequest(BaseModel):
+    mode: str = "balanced"
+    use_local_corpus: bool = True
+    use_human_reference: bool = False
+    human_reference_markdown: str | None = None
+    project_type: str = "auto"
+
+
+class QualityFeedbackApplyRequest(BaseModel):
+    report: dict
+    trace_diagnostics: dict | None = None
+
+
+class QualityAuditRunRequest(BaseModel):
+    source_markdown: str | None = None
+    human_reference_markdown: str | None = None
+    apply_feedback: bool = False
+
+
+class QualityAuditTargetExecuteRequest(BaseModel):
+    action: str | None = None
+
+
+class QualityAuditTargetsExecuteRequest(BaseModel):
+    include_user_confirmation: bool = False
+    limit: int = 10
+
+
+class GenerationReadinessBatchExecuteRequest(BaseModel):
+    group_id: str | None = None
+    include_user_confirmation: bool = False
+    limit: int = 10
+    respect_execution_window: bool = True
+
+
+class QualityIterationRunRequest(BaseModel):
+    max_rounds: int = 1
+    include_user_confirmation: bool = False
+    limit_per_round: int = 10
+    source_markdown: str | None = None
+    human_reference_markdown: str | None = None
+
+
+class PatternLibraryAnalyzeRequest(BaseModel):
+    corpus_dir: str | None = None
+    output_dir: str | None = None
+
+
+class PatternLibraryBuildSkillRequest(BaseModel):
+    corpus_dir: str | None = None
+    output_dir: str | None = None
+    skill_name: str = "construction-org-writing-patterns"
+    include_source_excerpts: bool = False
+    max_source_chars: int = 250_000
+
+
+class PatternLibraryApplyRequest(BaseModel):
+    generated_path: str | None = None
+
+
+class PatternLibraryLearningRequest(BaseModel):
+    project_id: str | None = None
+    learning_report_path: str | None = None
+    learning_report: dict | None = None
+    selected_suggestion_indexes: list[int] | None = None
+    output_dir: str | None = None
+
+
+class PatternLibraryAuditRequest(BaseModel):
+    generated_path: str | None = None
+    library: dict | None = None
+    corpus_dir: str | None = None
+    output_dir: str | None = None
+
+
+class PatternLibrarySkillExportRequest(BaseModel):
+    generated_path: str | None = None
+    output_path: str | None = None
+    output_dir: str | None = None
 
 
 class ProjectSummaryResponse(BaseModel):
@@ -151,16 +242,210 @@ class OutlinePlanResponse(BaseModel):
     artifact_markdown_path: str | None = None
 
 
+class GenerationControlPlanResponse(BaseModel):
+    plan: dict | None
+    artifact_json_path: str | None = None
+    artifact_markdown_path: str | None = None
+
+
+class RevisionDecisionsResponse(BaseModel):
+    decisions: list[dict] = Field(default_factory=list)
+    artifact_json_path: str | None = None
+    artifact_markdown_path: str | None = None
+
+
+class PipelineGateReportResponse(BaseModel):
+    project_id: str
+    overall_status: str
+    gates: list[dict] = Field(default_factory=list)
+
+
+class PipelineActionPlanResponse(BaseModel):
+    project_id: str
+    overall_status: str
+    actions: list[dict] = Field(default_factory=list)
+
+
+class GenerationReadinessResponse(BaseModel):
+    project_id: str
+    status: str
+    summary: str
+    nodes: list[dict] = Field(default_factory=list)
+    batches: list[dict] = Field(default_factory=list)
+    metrics: dict = Field(default_factory=dict)
+    artifact_json_path: str | None = None
+    artifact_markdown_path: str | None = None
+
+
+class OutlineGenerationStepProgressResponse(BaseModel):
+    project_id: str
+    status: str
+    summary: str
+    steps: list[dict] = Field(default_factory=list)
+    artifact_json_path: str | None = None
+
+
+class OutlineGenerationStepRunResponse(BaseModel):
+    project_id: str
+    step_id: str
+    status: str
+    generated: list[dict] = Field(default_factory=list)
+    skipped: list[dict] = Field(default_factory=list)
+    failed: list[dict] = Field(default_factory=list)
+    progress: dict = Field(default_factory=dict)
+    artifact_json_path: str | None = None
+
+
+class IterationPlanResponse(BaseModel):
+    project_id: str
+    status: str
+    summary: str
+    phases: list[dict] = Field(default_factory=list)
+    next_phase_id: str | None = None
+    requires_llm_count: int = 0
+    requires_user_confirmation_count: int = 0
+    artifact_json_path: str | None = None
+    artifact_markdown_path: str | None = None
+
+
+class CurrentExecutionWindowResponse(BaseModel):
+    project_id: str
+    status: str
+    current_phase_id: str | None = None
+    current_phase_title: str | None = None
+    blocking_reason: str = ""
+    allowed_actions: list[dict] = Field(default_factory=list)
+    deferred_actions: list[dict] = Field(default_factory=list)
+    requires_llm_count: int = 0
+    requires_user_confirmation_count: int = 0
+    artifact_json_path: str | None = None
+    artifact_markdown_path: str | None = None
+
+
+class TargetedRevisionPlanResponse(BaseModel):
+    source_output_root: str | None = None
+    source_model: str | None = None
+    comparison_verdict: str | None = None
+    project_count: int = 0
+    action_count: int = 0
+    action_counts: dict = Field(default_factory=dict)
+    priority_counts: dict = Field(default_factory=dict)
+    rerun_policy: str
+    projects: list[dict] = Field(default_factory=list)
+    artifact_json_path: str | None = None
+    artifact_markdown_path: str | None = None
+
+
+class PipelineBlueprintResponse(BaseModel):
+    blueprint: dict
+    markdown: str
+
+
 class DirectoryResponse(BaseModel):
     project: ProjectSummaryResponse
     template: TemplateTreeResponse | None = None
     source_toc: SourceTocResponse | None = None
     outline: OutlinePlanResponse | None = None
+    generation_control: GenerationControlPlanResponse | None = None
+    revision_decisions: RevisionDecisionsResponse | None = None
     chapter_tasks: list[dict] = Field(default_factory=list)
     profile_status: str = "not_ready"
     outline_status: str = "not_run"
     outline_source: str = "template"
     warnings: list[str] = Field(default_factory=list)
+
+
+class PatternLibraryResponse(BaseModel):
+    library: dict
+    active_path: str | None = None
+    generated_path: str | None = None
+    generated_available: bool | None = None
+
+
+class PatternLibraryAnalyzeResponse(BaseModel):
+    analysis: dict
+    generated_library: dict
+    corpus_dir: str
+    analysis_json_path: str
+    analysis_markdown_path: str
+    generated_path: str
+
+
+class PatternLibraryBuildSkillResponse(BaseModel):
+    corpus_dir: str
+    output_dir: str
+    analysis: dict
+    generated_library: dict
+    coverage_report: dict
+    skill_package: dict
+    analysis_json_path: str
+    analysis_markdown_path: str
+    generated_path: str
+    coverage_json_path: str
+    coverage_markdown_path: str
+    skill_package_dir: str
+    skill_manifest_path: str
+
+
+class PatternLibraryLearningResponse(BaseModel):
+    learning_report: dict
+    generated_library: dict
+    changes: list[dict] = Field(default_factory=list)
+    selected_suggestion_indexes: list[int] | None = None
+    source: str
+    generated_path: str
+    learning_report_path: str
+    learning_candidate_markdown_path: str
+
+
+class PatternLibraryAuditResponse(BaseModel):
+    report: dict
+    library: dict
+    source_path: str | None = None
+    corpus_dir: str | None = None
+    artifact_json_path: str
+    artifact_markdown_path: str
+
+
+class PatternLibraryApplyResponse(BaseModel):
+    applied: bool
+    applied_at: str | None = None
+    active_path: str
+    generated_path: str
+    backup_path: str | None = None
+    apply_log_path: str | None = None
+    apply_history_path: str | None = None
+    apply_history_count: int | None = None
+    coverage_status: str | None = None
+    coverage_issue_count: int | None = None
+    coverage_report: dict | None = None
+    library: dict
+
+
+class PatternLibraryApplyHistoryResponse(BaseModel):
+    history: list[dict] = Field(default_factory=list)
+    apply_history_path: str
+
+
+class PatternLibrarySkillResponse(BaseModel):
+    library: dict
+    markdown: str
+    validation_issues: list[dict] = Field(default_factory=list)
+    coverage_report: dict | None = None
+    output_path: str | None = None
+    output_dir: str | None = None
+    package_paths: dict | None = None
+    manifest: dict | None = None
+
+
+class PatternLibraryPromptCardsResponse(BaseModel):
+    version: str
+    corpus_scope: str
+    evidence_scope: str
+    stage_usage: dict[str, list[str]]
+    cards: dict[str, dict]
+    coverage_report: dict | None = None
+    source_path: str | None = None
 
 
 def project_summary(project) -> ProjectSummaryResponse:

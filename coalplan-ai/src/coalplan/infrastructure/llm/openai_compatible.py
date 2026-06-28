@@ -59,6 +59,7 @@ class OpenAICompatibleLLMClient:
                 prompt=prompt,
                 response=None,
                 parsed_json=None,
+                usage=None,
                 elapsed_seconds=time.perf_counter() - started,
                 error=str(exc),
             )
@@ -68,6 +69,7 @@ class OpenAICompatibleLLMClient:
             prompt=prompt,
             response=content,
             parsed_json=None,
+            usage=parsed.get("usage"),
             elapsed_seconds=time.perf_counter() - started,
             error=None,
         )
@@ -102,6 +104,7 @@ class OpenAICompatibleLLMClient:
                 prompt=prompt,
                 response=None,
                 parsed_json=None,
+                usage=None,
                 elapsed_seconds=time.perf_counter() - started,
                 error=str(exc),
             )
@@ -112,6 +115,7 @@ class OpenAICompatibleLLMClient:
             prompt=prompt,
             response=_strip_reasoning_tags(content).strip(),
             parsed_json=parsed_json,
+            usage=parsed.get("usage"),
             elapsed_seconds=time.perf_counter() - started,
             error=None,
         )
@@ -143,6 +147,7 @@ class OpenAICompatibleLLMClient:
         prompt: str,
         response: str | None,
         parsed_json: dict[str, Any] | None,
+        usage: dict[str, Any] | None,
         elapsed_seconds: float,
         error: str | None,
         schema_name: str | None = None,
@@ -167,6 +172,7 @@ class OpenAICompatibleLLMClient:
                     "prompt": prompt,
                     "response": response,
                     "parsed_json": parsed_json,
+                    "usage": usage,
                     "error": error,
                 },
                 ensure_ascii=False,

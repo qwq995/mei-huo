@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from coalplan.application.pattern_card_usage_audit import audit_pattern_card_usage
 from coalplan.application.run_generation_pipeline import GenerationPipeline
 from coalplan.domain.enums import RunStatus
 from coalplan.infrastructure.llm.fake_llm import FakeLLMClient
@@ -53,23 +54,38 @@ class CoalFirePipelineFakeLLMTest(unittest.TestCase):
             self.assertIsNotNone(project_after_prepare.outline_plan)
             self.assertTrue((artifact_root / "profile" / "project_profile.json").exists())
             self.assertTrue((artifact_root / "outline" / "generated_outline.json").exists())
+            self.assertTrue((artifact_root / "control" / "generation_control_plan.json").exists())
+            self.assertTrue((artifact_root / "control" / "generation_control_plan.md").exists())
 
             run = pipeline.generate_all(project.id)
             self.assertEqual(RunStatus.completed, run.status)
             self.assertTrue((artifact_root / "runs" / run.id / "validation.json").exists())
+            self.assertTrue((artifact_root / "control" / "revision_decisions.json").exists())
+            self.assertTrue((artifact_root / "control" / "revision_decisions.md").exists())
             self.assertTrue(any((artifact_root / "mapping").glob("*.json")))
             self.assertTrue(any((artifact_root / "mapping").glob("*.evidence.md")))
             task_with_evidence = next((task for task in run.chapter_tasks if task.source_mapping and task.source_mapping.evidence), None)
             self.assertIsNotNone(task_with_evidence)
             self.assertTrue(any((artifact_root / "chapters").glob("*.md")))
+            pattern_usage = audit_pattern_card_usage(artifact_root)
+            self.assertGreater(pattern_usage["summary"]["chapters_with_prompt_cards"], 0)
+            self.assertGreater(pattern_usage["summary"]["prompt_card_total"], 0)
+            self.assertTrue(
+                any(
+                    item["prompt_card_count"] > 0
+                    and item["prompt_card_audits"]
+                    and item["metadata_path"].endswith(".generation_metadata.json")
+                    for item in pattern_usage["items"]
+                )
+            )
 
             run = pipeline.merge_latest(project.id)
             self.assertIsNotNone(run.final_artifact_path)
             final_markdown = Path(run.final_artifact_path).read_text(encoding="utf-8")
             self.assertIn("# 煤火治理演示施工组织设计", final_markdown)
-            self.assertIn("## 主要来源摘要", final_markdown)
-            self.assertIn("## 人工补充需补充", final_markdown)
-            self.assertIn("【需人工补充：", final_markdown)
+            self.assertIn("本节围绕", final_markdown)
+            self.assertNotIn("## 主要来源摘要", final_markdown)
+            self.assertNotIn("## 人工补充需补充", final_markdown)
 
 
 def _pipeline(temp: Path, assets: Path) -> GenerationPipeline:

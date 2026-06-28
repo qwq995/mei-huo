@@ -22,6 +22,8 @@ class GeneratedContentNode(BaseModel):
     markdown: str = ""
     body: str = ""
     source_links: list[GeneratedContentSourceLink] = Field(default_factory=list)
+    source_status: str = "unknown"
+    mapping_issues: list[str] = Field(default_factory=list)
     children: list["GeneratedContentNode"] = Field(default_factory=list)
 
 

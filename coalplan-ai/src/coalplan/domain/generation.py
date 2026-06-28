@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from .documents import MarkdownSection, SourceDocument, SourceToc
 from .enums import RunStatus, TaskStatus
+from .generation_control import EvidenceUtilizationAudit
 from .outline import SourceMappingResult, TemplateOutlinePlan
 from .profile import ProjectProfile
 from .templates import TemplateTree
@@ -45,6 +46,8 @@ class ChapterDraft(BaseModel):
     missing_items: list[str] = Field(default_factory=list)
     validation_status: TaskStatus = TaskStatus.pending
     validation_issues: list[ValidationIssue] = Field(default_factory=list)
+    evidence_audit: EvidenceUtilizationAudit | None = None
+    generation_metadata: dict = Field(default_factory=dict)
     artifact_path: str | None = None
 
 

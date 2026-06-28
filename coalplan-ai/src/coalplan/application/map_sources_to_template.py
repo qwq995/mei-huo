@@ -11,6 +11,8 @@ def build_chapter_tasks(template: TemplateTree, sections: list[MarkdownSection],
     for node in iter_template_nodes(template.nodes):
         if not node.has_generation_contract:
             continue
+        if node.children:
+            continue
         matches = retriever.retrieve(node, sections, limit=4)
         tasks.append(ChapterTask(node_id=node.id, title=node.title, target_word_count=node.target_word_count, source_matches=matches))
     return tasks

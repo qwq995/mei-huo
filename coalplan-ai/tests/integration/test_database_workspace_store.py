@@ -16,6 +16,48 @@ from coalplan.infrastructure.templates.markdown_template_loader import MarkdownT
 
 
 class DatabaseWorkspaceStoreTest(unittest.TestCase):
+    def test_outline_proposals_reuse_pending_candidate_but_chapter_proposals_keep_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            session_factory = create_session_factory(sqlite_url_for_storage(temp / "db"))
+            init_database(session_factory)
+            artifacts = LocalArtifactRepository(temp / "artifacts")
+            workspace = WorkspaceStore(session_factory, artifacts)
+            project_id = "project_dedupe"
+
+            first = workspace.propose_outline_change(project_id, "repair outline", [{"node_id": "n1", "title": "A"}])
+            second = workspace.propose_outline_change(project_id, "repair outline", [{"node_id": "n2", "title": "B"}])
+
+            self.assertEqual(first["id"], second["id"])
+            pending_outline = workspace.list_proposals(project_id, target_type="outline", status="pending")
+            self.assertEqual(1, len(pending_outline))
+            self.assertEqual("n2", pending_outline[0]["preview"]["nodes"][0]["node_id"])
+
+            workspace._create_proposal(project_id, "outline", project_id, "legacy repair", {"nodes": [{"node_id": "old_1"}]})
+            workspace._create_proposal(project_id, "outline", project_id, "legacy repair", {"nodes": [{"node_id": "old_2"}]})
+            reused = workspace.propose_outline_change(project_id, "legacy repair", [{"node_id": "new_1"}])
+
+            self.assertEqual("new_1", reused["preview"]["nodes"][0]["node_id"])
+            pending_legacy = [
+                item
+                for item in workspace.list_proposals(project_id, target_type="outline", status="pending")
+                if item["suggestion"] == "legacy repair"
+            ]
+            superseded_legacy = [
+                item
+                for item in workspace.list_proposals(project_id, target_type="outline", status="superseded")
+                if item["suggestion"] == "legacy repair"
+            ]
+            self.assertEqual(1, len(pending_legacy))
+            self.assertEqual(1, len(superseded_legacy))
+
+            chapter_first = workspace.propose_chapter_edit(project_id, "chapter_1", "revise", "# one")
+            chapter_second = workspace.propose_chapter_edit(project_id, "chapter_1", "revise", "# two")
+
+            self.assertNotEqual(chapter_first["id"], chapter_second["id"])
+            pending_chapter = workspace.list_proposals(project_id, target_type="chapter", status="pending")
+            self.assertEqual(2, len(pending_chapter))
+
     def test_workspace_data_survives_new_store_instance(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         assets = repo_root / "src" / "coalplan" / "assets"
@@ -61,6 +103,34 @@ class DatabaseWorkspaceStoreTest(unittest.TestCase):
                 supplement_ids=[supplement["id"]],
                 created_by="user",
                 select=True,
+                generation_metadata={
+                    "selected_pattern_keys": ["craft", "quality"],
+                    "pattern_evidence_scope": "structural guidance only; not a factual source",
+                    "non_factual_pattern_rules": ["Do not copy unsupported project facts from the pattern library."],
+                },
+                evidence_audit={
+                    "node_id": node_id,
+                    "title": nodes[0]["title"],
+                    "evidence_count": 2,
+                    "required_source_facts": [
+                        {
+                            "fact_id": "ev_1:fact_1",
+                            "evidence_id": "ev_1",
+                            "section_id": "sec_1",
+                            "fact_type": "parameter",
+                            "text": "Subsection one must include parameter 0.2MPa.",
+                            "tokens": ["0.2MPa"],
+                        }
+                    ],
+                    "omitted_required_fact_ids": ["ev_1:fact_1"],
+                    "feedback_required_fact_hints": [],
+                    "omitted_feedback_fact_hints": [],
+                    "used_evidence_ids": ["ev_1"],
+                    "unused_high_value_evidence_ids": [],
+                    "coverage_ratio": 0.5,
+                    "manual_items_with_source_support": [],
+                    "issues": [],
+                },
             )
 
             reloaded = WorkspaceStore(session_factory, artifacts)
@@ -70,9 +140,51 @@ class DatabaseWorkspaceStoreTest(unittest.TestCase):
             self.assertEqual(version["id"], data["selected_version_id"])
             self.assertIn("测试章节", data["versions"][0]["markdown"])
             self.assertIn("content_tree", data["versions"][0])
+            self.assertIn("content_revision_plan", data["versions"][0])
+            self.assertTrue(data["versions"][0]["content_revision_plan_path"].endswith(".content_revision_plan.json"))
+            self.assertEqual(["craft", "quality"], data["versions"][0]["generation_metadata"]["selected_pattern_keys"])
+            self.assertTrue(data["versions"][0]["generation_metadata_path"].endswith(".generation_metadata.json"))
+            self.assertEqual(0.5, data["versions"][0]["evidence_audit"]["coverage_ratio"])
+            self.assertTrue(data["versions"][0]["evidence_audit_path"].endswith(".evidence_audit.json"))
+            metadata = reloaded.get_version_generation_metadata(project.id, node_id, version["id"])
+            self.assertIn("organization_audit", metadata)
+            self.assertIn("pattern_audits", metadata["organization_audit"])
+            evidence_audit = reloaded.get_version_evidence_audit(project.id, node_id, version["id"])
+            self.assertEqual(["ev_1"], evidence_audit["used_evidence_ids"])
             tree = reloaded.get_version_content_tree(project.id, node_id, version["id"])
             content_node = _find_generated_node(tree["nodes"], "子节一")
             self.assertIsNotNone(content_node)
+            revision_plan = reloaded.get_version_content_revision_plan(project.id, node_id, version["id"])
+            self.assertEqual(version["id"], revision_plan["version_id"])
+            self.assertGreaterEqual(revision_plan["metrics"]["candidate_count"], 1)
+            self.assertEqual(1, revision_plan["metrics"]["evidence_targeted_rewrite_count"])
+            self.assertTrue(
+                any(
+                    item["action"] == "rewrite_subsection" and "0.2MPa" in " ".join(item["next_steps"])
+                    for item in revision_plan["items"]
+                )
+            )
+            revision_targets = pipeline._version_content_revision_targets(project.id)
+            self.assertTrue(
+                any(
+                    target["action"] == "rewrite_subsection" and "0.2MPa" in " ".join(target.get("next_steps") or [])
+                    for target in revision_targets
+                )
+            )
+            learning = pipeline.quality_iteration_learning_report(
+                project.id,
+                quality_iteration={
+                    "project_id": project.id,
+                    "status": "warning",
+                    "round_count": 0,
+                    "rounds": [],
+                    "final_audit": {},
+                    "content_revision_targets": [],
+                    "generation_metadata_targets": [],
+                },
+            )
+            self.assertGreaterEqual(learning["metrics"]["content_revision_target_count"], 1)
+            self.assertEqual(1, learning["metrics"]["evidence_targeted_content_revision_target_count"])
             edited = reloaded.update_version_content_node(
                 project.id,
                 node_id,

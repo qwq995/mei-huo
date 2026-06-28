@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import {
   addSupplement,
   applyChapterProposal,
@@ -8,11 +8,15 @@ import {
   createProject,
   deleteOutlineNode,
   estimateOutlineWordCounts,
+  executeGenerationReadinessBatch,
   generateChapter,
   generateDirectory,
   generateProject,
+  getCurrentExecutionWindow,
   getDirectory,
   getFinalMarkdown,
+  getGenerationReadiness,
+  getPipelineActions,
   getTemplateTree,
   getWorkspace,
   listOutlineNodes,
@@ -32,9 +36,12 @@ import {
   type ChapterSupplement,
   type ChapterVersion,
   type ChapterWorkspace,
+  type CurrentExecutionWindowResponse,
   type DirectoryResponse,
   type GeneratedContentNode,
+  type GenerationReadinessResponse,
   type OutlineNode,
+  type PipelineAction,
   type ProjectResponse,
   type SourceTocItem,
   type TemplateNode,
@@ -44,6 +51,14 @@ import {
 const defaultMarkdown = "# 章节标题\n\n## 主要来源摘要\n\n## 生成正文\n\n## 人工补充需补充\n";
 
 type Notice = { kind: "ok" | "warn"; text: string };
+type PipelineStageState = "done" | "active" | "waiting" | "warning";
+type PipelineStageCard = {
+  key: string;
+  title: string;
+  state: PipelineStageState;
+  metric: string;
+  hint: string;
+};
 
 export default function App() {
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
@@ -66,6 +81,10 @@ export default function App() {
   const [chapterSuggestion, setChapterSuggestion] = useState("");
   const [selectedContentNodeId, setSelectedContentNodeId] = useState<string | null>(null);
   const [finalMarkdown, setFinalMarkdown] = useState("");
+  const [pipelineActions, setPipelineActions] = useState<PipelineAction[]>([]);
+  const [generationReadiness, setGenerationReadiness] = useState<GenerationReadinessResponse | null>(null);
+  const [executionWindow, setExecutionWindow] = useState<CurrentExecutionWindowResponse | null>(null);
+  const [pipelineStatus, setPipelineStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>({ kind: "ok", text: `后端地址：${API_BASE}` });
 
@@ -117,6 +136,71 @@ export default function App() {
     ],
     [project, outlineNodes.length, wordStats.withTarget, selectedVersion, finalMarkdown]
   );
+  const pipelineStages = useMemo<PipelineStageCard[]>(() => {
+    const selectedVersionCount = outlineNodes.filter((node) => node.selected_version_id).length;
+    const pendingProposalCount = workspace?.proposals.filter((item) => item.status === "pending").length ?? 0;
+    const versionCount = workspace?.versions.length ?? 0;
+    const readinessMetrics = generationReadiness?.metrics ?? {};
+    const autoCount =
+      generationReadiness?.batches
+        .filter((batch) => batch.execution_mode === "auto")
+        .reduce((sum, batch) => sum + batch.items.length, 0) ?? 0;
+    const manualCount = Number(readinessMetrics.requires_user_confirmation ?? 0);
+    const hasReadiness = Boolean(generationReadiness);
+    const hasInput = Boolean(project?.section_count);
+    const hasDirectory = outlineNodes.length > 0;
+    return [
+      {
+        key: "project",
+        title: "项目与模板",
+        state: project ? "done" : "active",
+        metric: project ? project.template_id : `${templates.length} 套模板`,
+        hint: project ? project.name : "选择模板并创建项目"
+      },
+      {
+        key: "input",
+        title: "投标输入",
+        state: hasInput ? "done" : project ? "active" : "waiting",
+        metric: hasInput ? `${project?.section_count ?? 0} 个来源章节` : "等待 Markdown",
+        hint: hasInput ? "已完成切章与来源目录" : "上传投标 Markdown 后生成来源目录"
+      },
+      {
+        key: "outline",
+        title: "项目目录",
+        state: pendingProposalCount ? "warning" : hasDirectory ? "done" : hasInput ? "active" : "waiting",
+        metric: hasDirectory ? `${outlineNodes.length} 个节点` : "未生成",
+        hint: pendingProposalCount ? `${pendingProposalCount} 个修改建议待确认` : "可编辑目录、四模块与启用状态"
+      },
+      {
+        key: "words",
+        title: "字数控制",
+        state: wordStats.withTarget ? "done" : hasDirectory ? "active" : "waiting",
+        metric: `${wordStats.withTarget}/${outlineNodes.length || 0} 节已设`,
+        hint: wordStats.total ? `目标合计约 ${wordStats.total} 字` : "估算或手动填写各章详略"
+      },
+      {
+        key: "chapter",
+        title: "生成准备",
+        state: !hasReadiness ? (hasDirectory ? "active" : "waiting") : manualCount ? "warning" : "done",
+        metric: hasReadiness ? generationReadiness?.status ?? "ready" : "未评估",
+        hint: hasReadiness ? `自动 ${autoCount} 项 / 人工 ${manualCount} 项` : "读取 readiness 后确定下一步"
+      },
+      {
+        key: "review",
+        title: "章节版本",
+        state: selectedVersionCount ? "done" : hasDirectory ? "active" : "waiting",
+        metric: `${selectedVersionCount}/${outlineNodes.length || 0} 节已选`,
+        hint: versionCount ? `当前章节 ${versionCount} 个版本` : "先映射来源，再生成章节版本"
+      },
+      {
+        key: "merge",
+        title: "合并交付",
+        state: finalMarkdown ? "done" : selectedVersionCount ? "active" : "waiting",
+        metric: finalMarkdown ? `${finalMarkdown.length} 字符` : "未合并",
+        hint: "只合并每章当前选中版本"
+      }
+    ];
+  }, [project, templates.length, outlineNodes, wordStats, workspace, selectedVersion, finalMarkdown, generationReadiness]);
 
   function showError(error: unknown) {
     setNotice({ kind: "warn", text: error instanceof Error ? error.message : String(error) });
@@ -147,6 +231,27 @@ export default function App() {
     const nodes = await listOutlineNodes(projectId);
     setOutlineNodes(nodes);
     if (!selectedNodeId && nodes[0]) setSelectedNodeId(nodes[0].node_id);
+    await refreshPipelineStatus(projectId);
+  }
+
+  async function refreshPipelineStatus(projectId = project?.id) {
+    if (!projectId) return;
+    try {
+      const [actionPlan, readiness, window] = await Promise.all([
+        getPipelineActions(projectId),
+        getGenerationReadiness(projectId),
+        getCurrentExecutionWindow(projectId)
+      ]);
+      setPipelineActions(actionPlan.actions ?? []);
+      setPipelineStatus(actionPlan.overall_status ?? readiness.status ?? "");
+      setGenerationReadiness(readiness);
+      setExecutionWindow(window);
+    } catch {
+      setPipelineActions([]);
+      setGenerationReadiness(null);
+      setExecutionWindow(null);
+      setPipelineStatus("");
+    }
   }
 
   async function refreshWorkspace(projectId = project?.id, nodeId = selectedNodeId) {
@@ -391,6 +496,22 @@ export default function App() {
     });
   }
 
+  async function handleExecuteReadinessBatch() {
+    if (!project) return;
+    await run(async () => {
+      const response = await executeGenerationReadinessBatch(project.id, null, false, 10);
+      await refreshDirectory(project.id);
+      if (selectedNodeId) await refreshWorkspace(project.id, selectedNodeId);
+      const executed = Array.isArray(response.executed) ? response.executed.length : 0;
+      const skipped = Array.isArray(response.skipped) ? response.skipped.length : 0;
+      const failed = Array.isArray(response.failed) ? response.failed.length : 0;
+      setNotice({
+        kind: failed ? "warn" : "ok",
+        text: `readiness 批次完成：执行 ${executed}，跳过 ${skipped}，失败 ${failed}`
+      });
+    });
+  }
+
   async function handleMerge() {
     if (!project) return;
     await run(async () => {
@@ -421,14 +542,16 @@ export default function App() {
         <span className={busy ? "busy-pill" : "idle-pill"}>{busy ? "处理中" : "就绪"}</span>
       </header>
 
-      <nav className="workflow-strip" aria-label="生成流程">
-        {workflowSteps.map((step, index) => (
-          <span key={step.label} className={step.done ? "workflow-step done" : "workflow-step"}>
-            <b>{index + 1}</b>
-            {step.label}
-          </span>
-        ))}
-      </nav>
+      <PipelineOverview
+        stages={pipelineStages}
+        fallbackSteps={workflowSteps}
+        status={pipelineStatus}
+        actionCount={pipelineActions.length}
+        readiness={generationReadiness}
+        executionWindow={executionWindow}
+        busy={busy}
+        onExecuteBatch={() => void handleExecuteReadinessBatch()}
+      />
 
       <div className="workspace-grid">
         <aside className="rail">
@@ -731,6 +854,78 @@ export default function App() {
       </div>
     </main>
   );
+}
+
+function PipelineOverview({
+  stages,
+  fallbackSteps,
+  status,
+  actionCount,
+  readiness,
+  executionWindow,
+  busy,
+  onExecuteBatch
+}: {
+  stages: PipelineStageCard[];
+  fallbackSteps: Array<{ label: string; done: boolean }>;
+  status: string;
+  actionCount: number;
+  readiness: GenerationReadinessResponse | null;
+  executionWindow: CurrentExecutionWindowResponse | null;
+  busy: boolean;
+  onExecuteBatch: () => void;
+}) {
+  const active = stages.find((stage) => stage.state === "warning") ?? stages.find((stage) => stage.state === "active");
+  const autoBatchCount = readiness?.batches.filter((batch) => batch.execution_mode === "auto").length ?? 0;
+  const currentWindow = executionWindow?.current_phase_title || executionWindow?.blocking_reason || readiness?.summary || status;
+  return (
+    <section className="pipeline-overview" aria-label="生成流水线总览">
+      <div className="pipeline-overview-head">
+        <div>
+          <strong>生成流水线</strong>
+          <span>{currentWindow || (active ? `${active.title}：${active.hint}` : "流程已就绪，可继续审阅或合并")}</span>
+        </div>
+        <div className="pipeline-overview-actions">
+          <span>{status || readiness?.status || "pipeline"}</span>
+          <span>{actionCount} 个建议动作</span>
+          <span>{autoBatchCount} 个自动批次</span>
+          <span>{busy ? "正在处理" : "就绪"}</span>
+          <span>{stages.filter((stage) => stage.state === "done").length}/{stages.length} 已完成</span>
+          <button disabled={busy || !autoBatchCount} onClick={onExecuteBatch}>
+            执行可自动项
+          </button>
+        </div>
+      </div>
+      <div className="pipeline-stage-grid">
+        {stages.map((stage, index) => (
+          <article key={stage.key} className={`pipeline-stage-card pipeline-stage-${stage.state}`}>
+            <header>
+              <b>{index + 1}</b>
+              <span>{stageLabel(stage.state)}</span>
+            </header>
+            <strong>{stage.title}</strong>
+            <em>{stage.metric}</em>
+            <p>{stage.hint}</p>
+          </article>
+        ))}
+      </div>
+      <div className="workflow-strip compact" aria-label="基础流程">
+        {fallbackSteps.map((step, index) => (
+          <span key={step.label} className={step.done ? "workflow-step done" : "workflow-step"}>
+            <b>{index + 1}</b>
+            {step.label}
+          </span>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function stageLabel(state: PipelineStageState) {
+  if (state === "done") return "完成";
+  if (state === "active") return "当前";
+  if (state === "warning") return "待确认";
+  return "等待";
 }
 
 function TemplateTreeItem({ node }: { node: TemplateNode }) {

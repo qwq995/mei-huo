@@ -16,17 +16,17 @@ def merge_chapters(
     title: str,
     artifacts: ArtifactRepository,
 ) -> GenerationRun:
-    draft_node_ids = {draft.node_id for draft in drafts}
+    mergeable_draft_node_ids = {draft.node_id for draft in drafts if draft.validation_status != TaskStatus.failed}
     for task in run.chapter_tasks:
-        if task.node_id in draft_node_ids:
+        if task.node_id in mergeable_draft_node_ids:
             task.status = TaskStatus.passed
     failed = [task for task in run.chapter_tasks if task.status != TaskStatus.passed]
     if failed:
         run.status = RunStatus.partial_failed
-        run.logs.append(f"Merge skipped: {len(failed)} chapter task(s) are not passed.")
+        run.logs.append(f"Merge skipped: {len(failed)} chapter task(s) have no selected or mergeable version.")
         return run
-    final_markdown = merge_template_tree_markdowns(title, template_tree.nodes, drafts)
+    final_markdown = merge_template_tree_markdowns(title, template_tree.nodes, [draft for draft in drafts if draft.node_id in mergeable_draft_node_ids])
     run.final_artifact_path = artifacts.write_text(project_id, "artifacts/final.md", final_markdown)
     run.status = RunStatus.completed
-    run.logs.append("Merged passed chapters into artifacts/final.md.")
+    run.logs.append("Merged selected mergeable chapters into artifacts/final.md; quality findings remain advisory for human review.")
     return run
