@@ -66,7 +66,10 @@ class MarkdownSectionSplitter:
             path = [item[1] for item in stack]
             sections.append(
                 MarkdownSection(
-                    id=stable_id("sec", source_file, *path),
+                    # Repeated volume/chapter headings are common in large tender files.
+                    # The source line keeps ids unique while remaining deterministic for
+                    # the same normalized document.
+                    id=stable_id("sec", source_file, str(line_no + 1), *path),
                     title_path=path,
                     level=level,
                     content=body,
@@ -87,7 +90,7 @@ class MarkdownSectionSplitter:
             atx = self.atx_heading_re.match(stripped)
             if atx:
                 title = atx.group(2).strip()
-                if title:
+                if title and not _is_quantity_row(title):
                     events.append((index, len(atx.group(1)), title))
                 continue
             chapter = self.chinese_chapter_re.match(stripped)
@@ -98,6 +101,14 @@ class MarkdownSectionSplitter:
                 continue
             numbered = self.numbered_heading_re.match(stripped)
             if numbered and len(stripped) <= 120:
+                # Tender quantity lists commonly start with forms such as
+                # "8 线：110kV..." or "3 台：变压器...". They are data rows,
+                # not outline headings, and must not become parents of the
+                # numbered clauses that follow.
+                if "." not in numbered.group(1) and _is_quantity_row(
+                    f"{numbered.group(1)}{numbered.group(2).strip()}"
+                ):
+                    continue
                 depth = numbered.group(1).count(".") + 1
                 title = f"{numbered.group(1)} {numbered.group(2).strip()}"
                 events.append((index, min(depth + 1, 6), title))
@@ -105,6 +116,16 @@ class MarkdownSectionSplitter:
             if stripped in {"前言", "附件", "总体判断"}:
                 events.append((index, 1, stripped))
         return events
+
+
+def _is_quantity_row(value: str) -> bool:
+    return bool(
+        re.match(
+            r"^\d+(?:\s*[-~～至]\s*\d+)?\s*"
+            r"(?:线|项|台|套|座|处|人|天|年|月|根|孔|组|个|辆|部|标段)\s*[：:]",
+            value.strip(),
+        )
+    )
 
 
 def extract_keywords(text: str) -> list[str]:
@@ -116,4 +137,3 @@ def extract_keywords(text: str) -> list[str]:
         if match not in keywords:
             keywords.append(match)
     return keywords[:30]
-

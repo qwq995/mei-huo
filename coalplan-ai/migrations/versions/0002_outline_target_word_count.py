@@ -18,8 +18,12 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("project_outline_nodes", sa.Column("target_word_count", sa.Integer(), nullable=True))
+    columns = {item["name"] for item in sa.inspect(op.get_bind()).get_columns("project_outline_nodes")}
+    if "target_word_count" not in columns:
+        op.add_column("project_outline_nodes", sa.Column("target_word_count", sa.Integer(), nullable=True))
 
 
 def downgrade() -> None:
-    op.drop_column("project_outline_nodes", "target_word_count")
+    columns = {item["name"] for item in sa.inspect(op.get_bind()).get_columns("project_outline_nodes")}
+    if "target_word_count" in columns:
+        op.drop_column("project_outline_nodes", "target_word_count")

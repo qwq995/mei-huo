@@ -25,3 +25,4 @@ src/coalplan/assets/generation/*.bak.json
 __pycache__/
 *.py[cod]
 .pytest_cache/
+*.log

@@ -171,6 +171,51 @@ class ChapterPromptTest(unittest.TestCase):
         self.assertTrue(any(issue.code == "writing_pattern_requires_revision" for issue in draft.validation_issues))
         self.assertEqual("warning", draft.generation_metadata["generation_metadata_audit"]["status"])
 
+    def test_specialized_skill_filters_unrelated_legacy_patterns(self) -> None:
+        node = TemplateNode(
+            id="node_hazard",
+            title="危险源辨识与分级管控",
+            level=3,
+            matched_skill_keys=["construction-safety-chapter"],
+        )
+        task = ChapterTask(node_id=node.id, title=node.title)
+        policy = ChapterGenerationPolicy(
+            node_id=node.id,
+            title=node.title,
+            writing_pattern_key="safety",
+            writing_pattern_matches=["safety", "environment", "craft"],
+            pattern_prompt_cards=[
+                {"pattern_key": "safety", "generation_moves": ["安全控制"]},
+                {"pattern_key": "environment", "generation_moves": ["环保控制"]},
+            ],
+        )
+        markdown = "\n".join(
+            [
+                "# 危险源辨识与分级管控",
+                REQUIRED_HEADINGS[0],
+                "- 无",
+                REQUIRED_HEADINGS[1],
+                "辨识危险源，制定安全措施、检查整改和应急预案，并形成记录闭环。",
+                REQUIRED_HEADINGS[2],
+                "- 无",
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            draft = generate_chapter(
+                project_id="project_demo",
+                node=node,
+                task=task,
+                llm=_StaticLLM(markdown),
+                artifacts=LocalArtifactRepository(Path(temp_dir)),
+                generation_policy=policy,
+            )
+
+        self.assertEqual(["safety"], draft.generation_metadata["selected_pattern_keys"])
+        specialized_policy = draft.generation_metadata["generation_policy"]
+        self.assertEqual(["safety"], specialized_policy["writing_pattern_matches"])
+        self.assertEqual([], specialized_policy["pattern_prompt_cards"])
+
     def test_chapter_prompt_limits_full_source_sections_by_word_budget(self) -> None:
         node = TemplateNode(
             id="node_pressure",

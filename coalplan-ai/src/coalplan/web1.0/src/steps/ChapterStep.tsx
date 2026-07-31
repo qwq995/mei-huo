@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react"
-import { ArrowRight, CheckCircle2, ChevronRight, FileEdit, FileText, GitBranch, History, Pencil, Save, Sparkles, Wand2, X } from "lucide-react"
+import { ArrowRight, BookOpenCheck, BrainCircuit, CheckCircle2, ChevronRight, Database, FileEdit, FileText, GitBranch, History, Layers3, Pencil, Save, Sparkles, Wand2, X } from "lucide-react"
 import {
   applyChapterProposal,
   createManualVersion,
   generateChapter,
   generateChildChapters,
+  getChapterGenerationPreflight,
   getChapter,
   getSourceSection,
   listOutlineNodes,
@@ -13,6 +14,7 @@ import {
   rejectChapterProposal,
   selectVersion,
   type ChapterResponse,
+  type ChapterGenerationPreflight,
   type SourceSection,
   type ChapterVersion,
   type OutlineNode,
@@ -89,6 +91,10 @@ function ChapterWorkspace({ project, node }: { project: ProjectResponse; node: O
   const projectId = project.project_id
   const chapter = useAsyncData<ChapterResponse>(() => getChapter(projectId, node.node_id), [projectId, node.node_id])
   const versionsData = useAsyncData<ChapterVersion[]>(() => listVersions(projectId, node.node_id), [projectId, node.node_id])
+  const preflight = useAsyncData<ChapterGenerationPreflight>(
+    () => getChapterGenerationPreflight(projectId, node.node_id),
+    [projectId, node.node_id],
+  )
   const [generating, setGenerating] = useState(false)
   const [generatingChildren, setGeneratingChildren] = useState(false)
 
@@ -142,10 +148,22 @@ function ChapterWorkspace({ project, node }: { project: ProjectResponse; node: O
             </Button>
           </div>
         </div>
+        {generating ? (
+          <div className="mt-4 flex items-start gap-2 border-t border-border pt-3 text-xs leading-relaxed text-muted-foreground">
+            <BrainCircuit className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+            <p>
+              正在依次完成来源细化、原子匹配、分段生成和事实边界检查。真实模型通常需要 2–4 分钟，完成前请停留在本页，系统会自动保存新版本。
+            </p>
+          </div>
+        ) : null}
       </Card>
 
       <div className="grid gap-5 xl:grid-cols-[1fr_340px]">
         <div className="flex min-w-0 flex-col gap-5">
+          <GenerationBasisPanel preflight={preflight.data} loading={preflight.loading} />
+          {chapter.data?.version && chapter.data.generation_metadata && Object.keys(chapter.data.generation_metadata).length
+            ? <GenerationReceipt chapter={chapter.data} />
+            : null}
           <SourcePanel projectId={projectId} chapter={chapter.data} loading={chapter.loading} />
           {chapter.loading ? (
             <Card className="p-5">
@@ -169,6 +187,121 @@ function ChapterWorkspace({ project, node }: { project: ProjectResponse; node: O
           <AttachmentPanel projectId={projectId} nodeId={node.node_id} />
         </div>
       </div>
+    </div>
+  )
+}
+
+function GenerationBasisPanel({ preflight, loading }: { preflight: ChapterGenerationPreflight | null; loading: boolean }) {
+  if (loading) {
+    return (
+      <Card className="p-5">
+        <LoadingBlock label="正在准备本章生成依据..." />
+      </Card>
+    )
+  }
+  if (!preflight) return null
+  return (
+    <Card className="overflow-hidden">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
+        <div>
+          <p className="text-sm font-semibold text-foreground">生成前依据预览</p>
+          <p className="mt-1 text-xs text-muted-foreground">{preflight.readiness.message}</p>
+        </div>
+        <span className={cn("rounded-full px-2.5 py-1 text-[11px] font-medium", preflight.readiness.can_generate ? "bg-[color-mix(in_srgb,var(--color-success)_14%,transparent)] text-[var(--color-success)]" : "bg-[color-mix(in_srgb,var(--color-warning)_16%,transparent)] text-[var(--color-warning)]")}>
+          {preflight.readiness.can_generate ? "依据已就绪" : "建议先补来源"}
+        </span>
+      </div>
+      <div className="grid divide-y divide-border md:grid-cols-3 md:divide-x md:divide-y-0">
+        <BasisColumn
+          icon={<Database className="h-4 w-4" />}
+          title="投标文档"
+          role="决定本项目能写哪些事实"
+          count={preflight.source_candidates.length}
+          lines={preflight.source_candidates.slice(0, 3).map((item) => item.title_path.join(" / "))}
+          empty="尚无候选来源"
+        />
+        <BasisColumn
+          icon={<BookOpenCheck className="h-4 w-4" />}
+          title="优质原子"
+          role="补充工序与控制闭环，不迁移参数"
+          count={preflight.reference_atom_candidates.length}
+          lines={preflight.reference_atom_candidates.slice(0, 3).map((item) => `${item.process || item.title_path[item.title_path.length - 1] || "未标注工艺"} · ${item.project_name}`)}
+          empty="本章不强行使用原子"
+        />
+        <BasisColumn
+          icon={<BrainCircuit className="h-4 w-4" />}
+          title="写作技巧"
+          role="控制结构与表达，不提供事实"
+          count={preflight.writing_skill.matched_skill_keys.length || 1}
+          lines={preflight.writing_skill.structure.slice(0, 3)}
+          empty="使用通用章节组织规则"
+        />
+      </div>
+      <div className="border-t border-border px-5 py-4">
+        <p className="flex items-center gap-2 text-xs font-semibold text-foreground">
+          <Layers3 className="h-4 w-4 text-primary" />
+          本章将分 {preflight.writing_units.length} 次细粒度生成
+        </p>
+        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+          {preflight.writing_units.map((unit) => (
+            <div key={unit.unit_id} className="flex items-start justify-between gap-3 border-l-2 border-primary/30 pl-3">
+              <div className="min-w-0">
+                <p className="truncate text-xs font-medium text-foreground">{unit.sequence}. {unit.title}</p>
+                <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{unit.writing_topics.slice(0, 3).join(" · ")}</p>
+              </div>
+              <span className="shrink-0 text-[11px] text-muted-foreground">约 {unit.target_word_count} 字</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+function BasisColumn({
+  icon,
+  title,
+  role,
+  count,
+  lines,
+  empty,
+}: {
+  icon: React.ReactNode
+  title: string
+  role: string
+  count: number
+  lines: string[]
+  empty: string
+}) {
+  return (
+    <div className="min-w-0 px-5 py-4">
+      <p className="flex items-center gap-2 text-xs font-semibold text-foreground">{icon}{title}<span className="text-muted-foreground">{count}</span></p>
+      <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{role}</p>
+      <ul className="mt-2 space-y-1">
+        {lines.length ? lines.map((line) => <li key={line} className="truncate text-[11px] text-foreground/80">{line}</li>) : <li className="text-[11px] text-muted-foreground">{empty}</li>}
+      </ul>
+    </div>
+  )
+}
+
+function GenerationReceipt({ chapter }: { chapter: ChapterResponse }) {
+  const metadata = chapter.generation_metadata ?? {}
+  const units = Array.isArray(metadata.writing_units) ? metadata.writing_units as Array<Record<string, unknown>> : []
+  const evidence = new Set<string>()
+  const atoms = new Set<string>()
+  const skills = new Set<string>()
+  units.forEach((unit) => {
+    ;(Array.isArray(unit.evidence_ids) ? unit.evidence_ids : []).forEach((item) => evidence.add(String(item)))
+    ;(Array.isArray(unit.reference_atom_ids) ? unit.reference_atom_ids : []).forEach((item) => atoms.add(String(item)))
+    ;(Array.isArray(unit.writing_skill_keys) ? unit.writing_skill_keys : []).forEach((item) => skills.add(String(item)))
+  })
+  return (
+    <div className="border-y border-border bg-muted/25 px-5 py-3">
+      <p className="text-xs font-semibold text-foreground">本版本生成凭据</p>
+      <p className="mt-1 text-xs text-muted-foreground">
+        {units.length} 个写作单元 · {evidence.size} 条投标证据 · {atoms.size} 条参考原子 · {skills.size} 项写作技巧
+      </p>
+      <p className="mt-1 text-[11px] text-muted-foreground">项目事实以投标证据为准；原子与技巧仅用于技术展开。所有编号随版本保留，可在来源映射中追溯。</p>
     </div>
   )
 }

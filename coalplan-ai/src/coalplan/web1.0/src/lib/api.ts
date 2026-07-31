@@ -12,10 +12,23 @@ export type TemplateNode = {
   special_notes: string[];
   target_word_count?: number | null;
   selected_version_id?: string | null;
+  chapter_summary?: ChapterSummary;
   children: TemplateNode[];
 };
 
 export type OutlineNode = Omit<TemplateNode, "children"> & { node_id: string; children?: TemplateNode[] };
+export type ChapterSummary = {
+  overview?: string;
+  generation_role?: string;
+  coverage_status?: string;
+  writing_unit_hints?: string[];
+  generated_overview?: string;
+  established_facts?: string[];
+  interfaces?: string[];
+  terminology?: string[];
+  unresolved_items?: string[];
+  reference_atom_ids?: string[];
+};
 
 export type TemplateSummary = {
   template_id: string;
@@ -31,6 +44,71 @@ export type ProjectResponse = {
   source_document_count: number;
   section_count: number;
   run_count: number;
+};
+
+export type ProjectExperienceSummary = {
+  project_id: string;
+  stage: "upload" | "outline" | "chapter" | "export" | string;
+  headline: string;
+  progress: Record<string, number>;
+  reference_library: { published_atoms: number; total_atoms: number; message: string };
+  actions: Array<{ id: string; label: string; target_step?: string; node_id?: string | null }>;
+  principles: string[];
+};
+
+export type WritingUnitPreview = {
+  unit_id: string;
+  title: string;
+  objective: string;
+  target_word_count: number;
+  writing_topics: string[];
+  content_functions: string[];
+  sequence: number;
+};
+
+export type ChapterGenerationPreflight = {
+  node_id: string;
+  title: string;
+  target_word_count?: number | null;
+  generation_role?: string;
+  coverage_status?: string;
+  writing_units: WritingUnitPreview[];
+  trust_contract: Record<string, string>;
+  source_candidates: Array<{ section_id: string; title_path: string[]; snippet: string }>;
+  reference_atom_candidates: Array<{ atom_id: string; project_name: string; title_path: string[]; process: string; quality_score: number; status: string }>;
+  writing_skill: { pattern_key: string; structure: string[]; matched_skill_keys: string[] };
+  readiness: { can_generate: boolean; message: string };
+};
+
+export type ReferenceLibrarySummary = {
+  document_count: number;
+  atom_count: number;
+  published_count: number;
+  candidate_count: number;
+  status_counts: Record<string, number>;
+  message: string;
+  workflow: string[];
+  candidate_atoms: Array<{
+    atom_id: string;
+    project_name: string;
+    project_type: string;
+    title_path: string[];
+    process: string;
+    quality_score: number;
+    status: string;
+    excerpt: string;
+  }>;
+};
+
+export type ReferenceImportResult = {
+  atom_count: number;
+  candidate_count: number;
+  llm_call_count: number;
+  failed_batch_count: number;
+  processing_status: "success" | "partial" | "failed";
+  user_message: string;
+  warnings: string[];
+  next_step: string;
 };
 
 export type SourceTocItem = {
@@ -707,6 +785,7 @@ export type ChapterResponse = {
   source_matches: SourceMatch[];
   source_mapping?: SourceMappingResult | null;
   version?: ChapterVersion | null;
+  generation_metadata?: Record<string, unknown>;
 };
 
 export const API_BASE = import.meta.env.VITE_COALPLAN_API_BASE ?? "http://127.0.0.1:8010";
@@ -723,6 +802,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const listTemplates = () => request<TemplateSummary[]>("/templates");
 export const getTemplateTree = async (templateId: string) => (await request<{ nodes: TemplateNode[] }>(`/templates/${templateId}`)).nodes;
 export const listProjects = () => request<ProjectResponse[]>("/projects");
+export const getProjectExperienceSummary = (projectId: string) => request<ProjectExperienceSummary>(`/projects/${projectId}/experience-summary`);
+export const getReferenceLibrarySummary = () => request<ReferenceLibrarySummary>("/reference-library/summary");
+export const uploadReferenceMarkdown = (
+  payload: { file_name: string; content: string; project_name: string; project_type: string; focus_terms?: string[]; max_batches?: number }
+) => request<ReferenceImportResult>("/reference-library/upload-markdown", { method: "POST", body: JSON.stringify(payload) });
+export const updateReferenceAtomStatus = (atomId: string, status: "published" | "rejected" | "reviewed") =>
+  request<Record<string, unknown>>(`/reference-library/atoms/${atomId}/status`, { method: "PATCH", body: JSON.stringify({ status }) });
 export const createProject = (name: string, templateId: string) => request<ProjectResponse>("/projects", { method: "POST", body: JSON.stringify({ name, template_id: templateId }) });
 export const deleteProject = (projectId: string) => request<{ deleted: boolean }>(`/projects/${projectId}`, { method: "DELETE" });
 export const uploadBidMarkdown = (projectId: string, fileName: string, content: string) => request<ProjectResponse>(`/projects/${projectId}/bid-markdown`, { method: "POST", body: JSON.stringify({ file_name: fileName, content }) });
@@ -781,6 +867,7 @@ export const addSupplement = (projectId: string, nodeId: string, payload: Partia
 export const updateSupplement = (projectId: string, nodeId: string, supplementId: string, payload: Partial<ChapterSupplement>) => request<ChapterSupplement>(`/projects/${projectId}/chapters/${nodeId}/supplements/${supplementId}`, { method: "PATCH", body: JSON.stringify(payload) });
 export const deleteSupplement = (projectId: string, nodeId: string, supplementId: string) => request<{ deleted: boolean }>(`/projects/${projectId}/chapters/${nodeId}/supplements/${supplementId}`, { method: "DELETE" });
 export const generateChapter = (projectId: string, nodeId: string) => request<ChapterResponse>(`/projects/${projectId}/chapters/${nodeId}/generate`, { method: "POST" });
+export const getChapterGenerationPreflight = (projectId: string, nodeId: string) => request<ChapterGenerationPreflight>(`/projects/${projectId}/chapters/${nodeId}/writing-units`);
 export const generateChildChapters = (projectId: string, parentNodeId: string, recursive = false, onlyPending = false, limit?: number | null) =>
   request<ChildChapterGenerationRun>(`/projects/${projectId}/chapters/${parentNodeId}/children/generate`, {
     method: "POST",

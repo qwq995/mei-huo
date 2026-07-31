@@ -1,0 +1,4 @@
+interface:
+  display_name: "施工质量章节"
+  short_description: "Expand quality control chapters from evidence"
+  default_prompt: "Use $construction-quality-chapter to expand and draft a source-grounded construction quality chapter."

@@ -1,8 +1,9 @@
 import { useCallback, useState } from "react"
-import { Check, CheckCircle2, ChevronRight, FileEdit, FolderKanban, ListTree, PanelsTopLeft, Upload } from "lucide-react"
-import type { ProjectResponse } from "@/lib/api"
+import { Check, CheckCircle2, ChevronRight, CircleDot, FileEdit, FolderKanban, ListTree, PanelsTopLeft, Upload } from "lucide-react"
+import { getProjectExperienceSummary, type ProjectExperienceSummary, type ProjectResponse } from "@/lib/api"
 import { ToastProvider } from "@/components/Toast"
 import { cn } from "@/lib/utils"
+import { useAsyncData } from "@/lib/useAsync"
 import { ProjectStep } from "@/steps/ProjectStep"
 import { UploadStep } from "@/steps/UploadStep"
 import { OutlineStep } from "@/steps/OutlineStep"
@@ -30,7 +31,9 @@ export default function App() {
 function Studio() {
   const [project, setProject] = useState<ProjectResponse | null>(null)
   const [active, setActive] = useState<StepId>("project")
+  const [experienceRevision, setExperienceRevision] = useState(0)
   const activeIndex = STEPS.findIndex((s) => s.id === active)
+  const refreshExperience = useCallback(() => setExperienceRevision((value) => value + 1), [])
 
   const goTo = useCallback(
     (id: StepId) => {
@@ -111,9 +114,17 @@ function Studio() {
         </nav>
 
         <main className="min-w-0 flex-1">
+          {project ? <ProjectPulse key={`${project.project_id}-${active}-${experienceRevision}`} project={project} onNavigate={(step) => goTo(step as StepId)} /> : null}
           <div key={active} className="animate-fade-in">
             {active === "project" && <ProjectStep current={project} onSelect={selectProject} />}
-            {active === "upload" && project && <UploadStep project={project} onNext={() => setActive("outline")} />}
+            {active === "upload" && project && (
+              <UploadStep
+                project={project}
+                onNext={() => setActive("outline")}
+                onExperienceChanged={refreshExperience}
+                onProjectUpdated={setProject}
+              />
+            )}
             {active === "outline" && project && <OutlineStep project={project} onNext={() => setActive("chapter")} />}
             {active === "chapter" && project && <ChapterStep project={project} onNext={() => setActive("export")} />}
             {active === "export" && project && <ExportStep project={project} />}
@@ -121,5 +132,39 @@ function Studio() {
         </main>
       </div>
     </div>
+  )
+}
+
+function ProjectPulse({ project, onNavigate }: { project: ProjectResponse; onNavigate: (step: string) => void }) {
+  const summary = useAsyncData<ProjectExperienceSummary>(
+    () => getProjectExperienceSummary(project.project_id),
+    [project.project_id],
+  )
+  if (!summary.data) return null
+  const data = summary.data
+  const progress = data.progress
+  const action = data.actions[0]
+  return (
+    <section className="mb-5 border-y border-border bg-muted/30 px-4 py-3" aria-label="项目当前进度">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="flex items-center gap-2 text-sm font-medium text-foreground">
+            <CircleDot className="h-4 w-4 text-accent" />
+            {data.headline}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            已索引 {progress.indexed_sections ?? 0} 节 · 目录 {progress.outline_nodes ?? 0} 节点 · 已生成 {progress.generated_chapters ?? 0}/{progress.leaf_chapters ?? 0} 章 · {data.reference_library.message}
+          </p>
+        </div>
+        {action?.target_step ? (
+          <button
+            className="text-xs font-medium text-primary hover:underline"
+            onClick={() => onNavigate(action.target_step!)}
+          >
+            {action.label}
+          </button>
+        ) : null}
+      </div>
+    </section>
   )
 }

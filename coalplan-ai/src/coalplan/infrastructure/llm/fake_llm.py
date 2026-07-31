@@ -11,6 +11,8 @@ class FakeLLMClient:
     def complete(self, prompt: str) -> str:
         if "CONTENT_SUBSECTION_REVISION_PROMPT" in prompt:
             return _fake_content_subsection_revision(prompt)
+        if "CHAPTER_WRITING_UNIT_PROMPT" in prompt:
+            return _fake_chapter_writing_unit(prompt)
         title = _extract(prompt, "当前小章节标题") or _extract(prompt, "章节标题") or "未命名章节"
         sources = _extract_block(prompt, "已匹配来源章节摘要") or _extract_block(prompt, "来源片段")
         manual = _extract_block(prompt, "人工补充项")
@@ -18,6 +20,7 @@ class FakeLLMClient:
         required_facts = _extract_required_facts(prompt)
         feedback_required_facts = _extract_feedback_required_facts(prompt)
         pattern_moves = _extract_pattern_requirements(prompt)
+        evidence_quotes = _extract_evidence_quotes(prompt)
         source_lines = [line.strip() for line in sources.splitlines() if line.strip().startswith("-")]
         if not source_lines:
             source_lines = ["- 未在投标文档中识别到强匹配章节。"]
@@ -39,6 +42,7 @@ class FakeLLMClient:
             *(_render_pattern_moves_body(pattern_moves) if pattern_moves else []),
             *(_render_required_fact_body(required_facts) if required_facts else []),
             *(_render_feedback_required_fact_body(feedback_required_facts) if feedback_required_facts else []),
+            *(_render_evidence_quotes_body(evidence_quotes) if evidence_quotes else []),
             "",
             "## 人工补充需补充",
         ]
@@ -92,6 +96,24 @@ def _extract_feedback_required_facts(prompt: str) -> list[str]:
     return [line.strip("- ").strip() for line in block.splitlines() if line.strip().startswith("-")]
 
 
+def _extract_evidence_quotes(prompt: str) -> list[str]:
+    block = _extract_block(prompt, "原文文段映射表（模板要求 -> 输入文档证据）")
+    if not block:
+        block = prompt
+    spans = re.findall(
+        r"### evidence_id:\s*(ev_[0-9a-f]{12}).*?```text\s*(.*?)\s*```",
+        block,
+        flags=re.S,
+    )
+    if not spans:
+        spans = re.findall(r"^-\s*(ev_[0-9a-f]{12})：(.*)$", block, flags=re.M)
+    return [
+        f"{evidence_id}：{re.sub(r'\s+', ' ', quote).strip()}"
+        for evidence_id, quote in spans
+        if quote.strip()
+    ]
+
+
 def _extract_pattern_requirements(prompt: str) -> list[str]:
     requirements: list[str] = []
     active_label = ""
@@ -112,6 +134,17 @@ def _extract_pattern_requirements(prompt: str) -> list[str]:
                 requirements.append(value)
         if len(requirements) >= 12:
             break
+    preserved = re.findall(
+        r"本节已按本地施组写作模式组织以下要点：\s*((?:\n-\s+.*)+)",
+        prompt,
+    )
+    for block in preserved:
+        for line in block.splitlines():
+            value = line.strip("- ").strip()
+            if value and value not in requirements:
+                requirements.append(value)
+            if len(requirements) >= 12:
+                return requirements
     return requirements
 
 
@@ -130,6 +163,29 @@ def _fake_content_subsection_revision(prompt: str) -> str:
         lines.append("本小节已承接 content_revision_required_facts 中要求补写的来源事实：")
         lines.extend(f"- {fact}" for fact in required_facts[:8])
     lines.append("后续真实模型应结合来源章节全文展开施工对象、工艺流程、资源条件、质量安全控制和记录要求；本地 fake 输出仅用于验证小节级版本更新链路。")
+    return "\n".join(lines).strip() + "\n"
+
+
+def _fake_chapter_writing_unit(prompt: str) -> str:
+    title = _extract(prompt, "写作单元") or "写作单元"
+    evidence_quotes = _extract_evidence_quotes(prompt)
+    required_facts = _extract_required_facts(prompt)
+    feedback_required_facts = _extract_feedback_required_facts(prompt)
+    pattern_moves = _extract_pattern_requirements(prompt)
+    lines = [
+        f"### {title}",
+        "",
+        f"本单元围绕“{title}”组织施工对象、工艺步骤和控制要求。本地 fake 输出用于验证细粒度调用与整章装配链路。",
+    ]
+    if evidence_quotes:
+        lines.extend(["", "本单元承接以下当前项目投标证据：", *[f"- {item}" for item in evidence_quotes[:4]]])
+    if required_facts:
+        lines.extend(["", "本单元优先吸收以下来源事实：", *[f"- {item}" for item in required_facts[:4]]])
+    if feedback_required_facts:
+        lines.extend(["", "本单元按质量反馈承接以下来源事实：", *[f"- {item}" for item in feedback_required_facts[:4]]])
+    if pattern_moves:
+        lines.extend(["", "本单元按本地施组写作模式组织以下要点：", *[f"- {item}" for item in pattern_moves[:8]]])
+    lines.extend(["", "实际生成时应继续依据投标证据填充参数，并利用参考原子和写作技巧完善工序、检查与记录闭环。"])
     return "\n".join(lines).strip() + "\n"
 
 
@@ -153,6 +209,10 @@ def _render_required_fact_body(required_facts: list[str]) -> list[str]:
 
 def _render_feedback_required_fact_body(required_facts: list[str]) -> list[str]:
     return ["", "本节已按质量反馈补写以下来源事实：", *[f"- {item}" for item in required_facts[:8]]]
+
+
+def _render_evidence_quotes_body(quotes: list[str]) -> list[str]:
+    return ["", "本节测试正文承接以下原文证据：", *[f"- {item}" for item in quotes]]
 
 
 def _render_pattern_moves_body(pattern_moves: list[str]) -> list[str]:

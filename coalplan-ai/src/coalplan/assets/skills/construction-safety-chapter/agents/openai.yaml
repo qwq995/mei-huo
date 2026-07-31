@@ -1,0 +1,4 @@
+interface:
+  display_name: "施工安全章节"
+  short_description: "Expand safety and emergency chapters from evidence"
+  default_prompt: "Use $construction-safety-chapter to expand and draft a source-grounded construction safety chapter."

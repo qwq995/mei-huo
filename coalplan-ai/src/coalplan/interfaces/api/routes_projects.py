@@ -69,6 +69,16 @@ def get_project(project_id: str, request: Request):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.get("/projects/{project_id}/experience-summary", response_model=dict)
+def get_project_experience_summary(project_id: str, request: Request):
+    try:
+        return request.app.state.pipeline.get_project_experience_summary(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.delete("/projects/{project_id}")
 def delete_project(project_id: str, request: Request, keep_artifacts: bool = True):
     pipeline = request.app.state.pipeline
@@ -347,7 +357,7 @@ def get_targeted_revision_plan(project_id: str, request: Request):
 def generate_directory(project_id: str, request: Request):
     pipeline = request.app.state.pipeline
     try:
-        project = pipeline.prepare_directory(project_id)
+        project = pipeline.prepare_directory(project_id, force=True)
         return _directory_response(project, pipeline)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

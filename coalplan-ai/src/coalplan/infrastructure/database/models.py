@@ -83,6 +83,11 @@ class ProjectOutlineNodeRecord(Base):
     manual_fill_json: Mapped[str] = mapped_column(Text, nullable=False)
     special_notes_json: Mapped[str] = mapped_column(Text, nullable=False)
     target_word_count: Mapped[int | None] = mapped_column(Integer)
+    origin: Mapped[str] = mapped_column(Text, default="template", nullable=False)
+    template_anchor_id: Mapped[str | None] = mapped_column(Text, index=True)
+    source_hints_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    matched_skill_keys_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    chapter_summary_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
     selected_version_id: Mapped[str | None] = mapped_column(Text, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
@@ -193,4 +198,71 @@ class LLMTraceRecord(Base):
     trace_path: Mapped[str | None] = mapped_column(Text)
     prompt: Mapped[str | None] = mapped_column(Text)
     response: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+
+
+class ReferenceDocumentRecord(Base):
+    __tablename__ = "reference_documents"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    content_hash: Mapped[str] = mapped_column(Text, unique=True, index=True)
+    source_path: Mapped[str] = mapped_column(Text, nullable=False)
+    file_name: Mapped[str] = mapped_column(Text, nullable=False)
+    project_name: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    project_type: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    document_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
+
+
+class ReferenceChapterRecord(Base):
+    __tablename__ = "reference_chapters"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("reference_documents.id", ondelete="CASCADE"), index=True)
+    title_path_json: Mapped[str] = mapped_column(Text, nullable=False)
+    start_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+class ReferenceAtomRecord(Base):
+    __tablename__ = "reference_atoms"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("reference_documents.id", ondelete="CASCADE"), index=True)
+    project_name: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    project_type: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    title_path_json: Mapped[str] = mapped_column(Text, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    source_block_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
+    start_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    tags_json: Mapped[str] = mapped_column(Text, nullable=False)
+    applicability_json: Mapped[str] = mapped_column(Text, nullable=False)
+    prohibited_scenarios_json: Mapped[str] = mapped_column(Text, nullable=False)
+    fact_variables_json: Mapped[str] = mapped_column(Text, nullable=False)
+    quality_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
+
+
+class ChapterAtomUsageRecord(Base):
+    __tablename__ = "chapter_atom_usages"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    project_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    node_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    chapter_version_id: Mapped[str | None] = mapped_column(Text, index=True)
+    atom_id: Mapped[str] = mapped_column(ForeignKey("reference_atoms.id"), index=True)
+    retrieval_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    match_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    prompt_use: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    decision: Mapped[str] = mapped_column(Text, nullable=False, default="selected")
+    prompt_snapshot_path: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)

@@ -23,14 +23,24 @@ class TemplateOutlinePlanValidator:
     def validate(self, outline: TemplateOutlinePlan, template_tree: TemplateTree, toc_items: list[SourceTocItem]) -> ValidationResult:
         valid_node_ids = {node.id for node in iter_template_nodes(template_tree.nodes)}
         valid_source_ids = {item.section_id for item in toc_items}
+        outline_ids = {node.node_id for node in outline.nodes}
+        parent_ids = {node.parent_node_id for node in outline.nodes if node.parent_node_id}
         issues: list[ValidationIssue] = []
+        missing_template_ids = valid_node_ids - outline_ids
+        for node_id in sorted(missing_template_ids):
+            issues.append(ValidationIssue(code="missing_template_node", message=f"Template node is missing: {node_id}"))
         for node in outline.nodes:
             if node.node_id not in valid_node_ids:
-                issues.append(ValidationIssue(code="invalid_template_node_id", message=f"Unknown template node_id: {node.node_id}"))
+                if node.origin not in {"bid", "skill", "hybrid"}:
+                    issues.append(ValidationIssue(code="invalid_template_node_id", message=f"Unknown template node_id: {node.node_id}"))
+                if not node.parent_node_id or node.parent_node_id not in outline_ids:
+                    issues.append(ValidationIssue(code="invalid_dynamic_node_parent", message=f"Dynamic node has invalid parent: {node.node_id}"))
+                if not node.template_anchor_id or node.template_anchor_id not in valid_node_ids:
+                    issues.append(ValidationIssue(code="invalid_template_anchor", message=f"Dynamic node has invalid template anchor: {node.node_id}"))
             for section_id in node.source_hints:
                 if section_id not in valid_source_ids:
                     issues.append(ValidationIssue(code="invalid_source_hint", message=f"Unknown source_hints section_id: {section_id}"))
-            if node.enabled and not (node.main_sources and node.auto_fill and node.manual_fill):
+            if node.enabled and node.node_id not in parent_ids and not (node.main_sources and node.auto_fill and node.manual_fill):
                 issues.append(ValidationIssue(code="missing_outline_modules", message=f"Outline node lacks required modules: {node.title}"))
         return ValidationResult(passed=not issues, issues=issues)
 

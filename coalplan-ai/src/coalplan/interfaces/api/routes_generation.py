@@ -59,6 +59,26 @@ def list_chapters(project_id: str, request: Request):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.get("/projects/{project_id}/generation-context", response_model=dict)
+def get_generation_context(project_id: str, request: Request):
+    try:
+        return request.app.state.pipeline.get_generation_context(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/chapters/{node_id}/writing-units", response_model=dict)
+def preview_chapter_writing_units(project_id: str, node_id: str, request: Request):
+    try:
+        return request.app.state.pipeline.preview_chapter_writing_units(project_id, node_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/projects/{project_id}/chapters/{node_id}/generate", response_model=ChapterResponse)
 def generate_chapter(project_id: str, node_id: str, request: Request):
     pipeline = request.app.state.pipeline
@@ -75,6 +95,8 @@ def generate_chapter(project_id: str, node_id: str, request: Request):
             draft_path=draft.artifact_path,
             source_matches=[_dump(match) for match in task.source_matches] if task else [],
             source_mapping=_dump(task.source_mapping) if task and task.source_mapping else None,
+            generation_metadata=draft.generation_metadata,
+            evidence_audit=_dump(draft.evidence_audit) if draft.evidence_audit else None,
             version=_selected_version(request, project_id, node_id),
         )
     except HTTPException:

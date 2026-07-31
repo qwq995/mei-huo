@@ -17,7 +17,7 @@ import {
 } from "@/lib/api"
 import { useAsyncData } from "@/lib/useAsync"
 import { useToast } from "@/components/Toast"
-import { Button, Card, EmptyState, LoadingBlock, SectionTitle, TextArea, TextInput } from "@/components/ui"
+import { Badge, Button, Card, EmptyState, LoadingBlock, SectionTitle, TextArea, TextInput } from "@/components/ui"
 import { cn } from "@/lib/utils"
 
 type TreeNode = OutlineNode & { _children: TreeNode[] }
@@ -61,10 +61,11 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
   const selected = useMemo(() => outline.data?.find((n) => n.node_id === selectedId) ?? null, [outline.data, selectedId])
 
   const handleGenerate = async () => {
+    const replacing = Boolean(outline.data?.length)
     setGenerating(true)
     try {
       await generateDirectory(project.project_id)
-      toast.success("目录已生成")
+      toast.success(replacing ? "目录已重新生成，旧目录已替换" : "目录已生成")
       await outline.reload()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "生成失败")
@@ -133,6 +134,7 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
       </Card>
 
       <div className="flex flex-col gap-5">
+        {selected ? <OutlineNodeSummary node={selected} /> : null}
         <NodeEditor
           key={selected?.node_id ?? "none"}
           projectId={project.project_id}
@@ -180,7 +182,19 @@ function OutlineRow({ node, selectedId, onSelect }: { node: TreeNode; selectedId
           <span className="w-5" />
         )}
         <button onClick={() => onSelect(node.node_id)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
-          <span className={cn("truncate text-sm", disabled ? "text-muted-foreground/60 line-through" : "text-foreground")}>{node.title || "未命名章节"}</span>
+          <span className="min-w-0 flex-1">
+            <span className={cn("block truncate text-sm", disabled ? "text-muted-foreground/60 line-through" : "text-foreground")}>{node.title || "未命名章节"}</span>
+            {node.chapter_summary?.generated_overview || node.chapter_summary?.overview ? (
+              <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                {node.chapter_summary.generated_overview || node.chapter_summary.overview}
+              </span>
+            ) : null}
+          </span>
+          {node.chapter_summary?.coverage_status ? (
+            <Badge tone={node.chapter_summary.coverage_status === "grounded" ? "success" : node.chapter_summary.coverage_status === "aggregate" ? "info" : "warning"} className="shrink-0">
+              {node.chapter_summary.coverage_status === "grounded" ? "有依据" : node.chapter_summary.coverage_status === "aggregate" ? "结构章" : "待补来源"}
+            </Badge>
+          ) : null}
           {node.target_word_count ? <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">{node.target_word_count} 字</span> : null}
         </button>
       </div>
@@ -192,6 +206,28 @@ function OutlineRow({ node, selectedId, onSelect }: { node: TreeNode; selectedId
         </ul>
       ) : null}
     </li>
+  )
+}
+
+function OutlineNodeSummary({ node }: { node: OutlineNode }) {
+  const summary = node.chapter_summary
+  if (!summary) return null
+  const hints = summary.writing_unit_hints ?? []
+  const unresolved = summary.unresolved_items ?? []
+  return (
+    <div className="border-y border-border bg-muted/25 px-4 py-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-semibold text-foreground">本章生成概括</p>
+        <span className="text-[11px] text-muted-foreground">
+          {summary.generation_role === "container" ? "仅作目录容器" : "可生成章节"}
+        </span>
+      </div>
+      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+        {summary.generated_overview || summary.overview || "尚无概括，生成目录后系统会说明本章范围与依据。"}
+      </p>
+      {hints.length ? <p className="mt-2 text-[11px] text-muted-foreground">建议展开：{hints.slice(0, 5).join(" · ")}</p> : null}
+      {unresolved.length ? <p className="mt-1 text-[11px] text-[var(--color-warning)]">待确认：{unresolved.slice(0, 3).join(" · ")}</p> : null}
+    </div>
   )
 }
 
@@ -442,6 +478,23 @@ function AIOutlinePanel({ projectId, onApplied }: { projectId: string; onApplied
         <Button onClick={proposeRefine} loading={loading} variant="accent" icon={<Sparkles className="h-4 w-4" />}>
           生成预生成目录精修建议
         </Button>
+        <div className="flex flex-wrap gap-2">
+          {[
+            "补足工艺层级，并保持现有一级目录不变",
+            "合并重复章节，保留来源更充分的节点",
+            "补足质量、安全和验收闭环",
+            "依据投标目录纠正标题与章节归属",
+          ].map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => setSuggestion(item)}
+              className="rounded-full border border-border px-2.5 py-1 text-[11px] text-muted-foreground hover:border-primary/40 hover:text-primary"
+            >
+              {item}
+            </button>
+          ))}
+        </div>
         <TextArea rows={3} value={suggestion} onChange={(e) => setSuggestion(e.target.value)} placeholder="也可以输入自然语言调整，例如：把注水、灌浆、覆盖封堵拆成工艺、参数控制、质量记录、安全环保几个子节。" />
         <Button onClick={proposeCustom} loading={loading} variant="outline" icon={<Wand2 className="h-4 w-4" />}>
           生成自定义调整方案

@@ -14,6 +14,11 @@ class TemplateNode(BaseModel):
     manual_fill: list[str] = Field(default_factory=list)
     special_notes: list[str] = Field(default_factory=list)
     target_word_count: int | None = None
+    origin: str = "template"
+    template_anchor_id: str | None = None
+    source_hints: list[str] = Field(default_factory=list)
+    matched_skill_keys: list[str] = Field(default_factory=list)
+    chapter_summary: dict = Field(default_factory=dict)
     children: list["TemplateNode"] = Field(default_factory=list)
 
     @property

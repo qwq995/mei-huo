@@ -151,6 +151,11 @@ def _sync_outline_nodes(session, project: Project) -> None:
                 manual_fill_json=_json(node.manual_fill),
                 special_notes_json=_json(node.special_notes),
                 target_word_count=node.target_word_count,
+                origin=node.origin,
+                template_anchor_id=node.template_anchor_id,
+                source_hints_json=_json(node.source_hints),
+                matched_skill_keys_json=_json(node.matched_skill_keys),
+                chapter_summary_json=_json(node.chapter_summary),
             )
         )
 

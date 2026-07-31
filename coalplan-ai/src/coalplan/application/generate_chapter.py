@@ -1,25 +1,43 @@
 from __future__ import annotations
 
+import re
+
 from coalplan.application.serialization import dump_model, to_json_text
 from coalplan.domain.documents import MarkdownSection
 from coalplan.domain.enums import TaskStatus
 from coalplan.domain.generation import ChapterDraft, ChapterTask
+from coalplan.domain.generation_context import WritingUnitTrace
 from coalplan.domain.generation_control import ChapterGenerationPolicy, EvidenceUtilizationAudit
 from coalplan.domain.profile import ProjectProfile
+from coalplan.domain.reference_library import AtomRetrievalResult
 from coalplan.domain.templates import TemplateNode
 from coalplan.domain.validation import ValidationIssue
 from coalplan.ports.llm import LLMClient
 from coalplan.ports.repository import ArtifactRepository
 
 from .chapter_writing_guidance import guidance_for_node, render_writing_guidance
+from .chapter_skill_library import render_chapter_skills_for_prompt
+from .chapter_writing_units import ChapterWritingUnitContext, compact_completed_unit
 from .evidence_utilization import audit_evidence_utilization, extract_required_source_facts
 from .generation_metadata_audit import audit_version_generation_metadata
 from .validate_chapter import validate_chapter
 from .word_count_targets import count_words
 from .writing_pattern_library import match_patterns_for_text, render_pattern_matches_for_prompt
+from .reference_atom_retrieval import (
+    audit_reference_atom_leakage,
+    build_reference_leakage_repair_prompt,
+    render_reference_atoms_for_prompt,
+)
 
 
 MAX_SECTION_CHARS = 3000
+SKILL_PATTERN_KEYS = {
+    "construction-craft-chapter": "craft",
+    "construction-safety-chapter": "safety",
+    "construction-quality-chapter": "quality",
+    "construction-environment-chapter": "environment",
+    "construction-schedule-resource-chapter": "schedule_resource",
+}
 
 
 def generate_chapter(
@@ -34,18 +52,38 @@ def generate_chapter(
     user_context: str = "",
     required_fact_hints: list[str] | None = None,
     generation_policy: ChapterGenerationPolicy | None = None,
+    reference_atom_results: list[AtomRetrievalResult] | None = None,
+    writing_unit_contexts: list[ChapterWritingUnitContext] | None = None,
+    global_context: str = "",
 ) -> ChapterDraft:
     task.status = TaskStatus.running
-    prompt = build_chapter_prompt(
-        node=node,
-        task=task,
-        project_profile=project_profile,
-        selected_source_sections=selected_source_sections or [],
-        user_context=user_context,
-        required_fact_hints=required_fact_hints or [],
-        generation_policy=generation_policy,
-    )
-    markdown = llm.complete(prompt)
+    generation_policy = _specialize_generation_policy(node, generation_policy)
+    unit_traces: list[WritingUnitTrace] = []
+    if writing_unit_contexts:
+        markdown, unit_traces = _generate_chapter_by_writing_units(
+            node=node,
+            task=task,
+            llm=llm,
+            project_profile=project_profile,
+            user_context=user_context,
+            global_context=global_context,
+            required_fact_hints=required_fact_hints or [],
+            generation_policy=generation_policy,
+            writing_unit_contexts=writing_unit_contexts,
+        )
+    else:
+        prompt = build_chapter_prompt(
+            node=node,
+            task=task,
+            project_profile=project_profile,
+            selected_source_sections=selected_source_sections or [],
+            user_context=user_context,
+            required_fact_hints=required_fact_hints or [],
+            generation_policy=generation_policy,
+            reference_atom_results=reference_atom_results or [],
+            global_context=global_context,
+        )
+        markdown = llm.complete(prompt)
     if _exceeds_word_budget(markdown, task.target_word_count):
         markdown = llm.complete(
             build_word_budget_repair_prompt(
@@ -62,7 +100,13 @@ def generate_chapter(
         source_section_ids=[match.section_id for match in task.source_matches],
         source_mapping=task.source_mapping,
         missing_items=node.manual_fill,
-        generation_metadata=build_generation_metadata(node=node, task=task, generation_policy=generation_policy),
+        generation_metadata=build_generation_metadata(
+            node=node,
+            task=task,
+            generation_policy=generation_policy,
+            reference_atom_results=reference_atom_results or [],
+            writing_unit_traces=unit_traces,
+        ),
     )
     draft = validate_chapter(draft, expected_title=node.title, source_count=len(task.source_matches))
     if draft.validation_status == TaskStatus.failed:
@@ -78,6 +122,92 @@ def generate_chapter(
         manual_items=node.manual_fill,
         required_fact_hints=required_fact_hints or [],
     )
+    if draft.evidence_audit.manual_items_with_source_support:
+        draft.markdown = _remove_supported_manual_placeholders(
+            draft.markdown,
+            draft.evidence_audit.manual_items_with_source_support,
+        )
+        draft.evidence_audit = audit_evidence_utilization(
+            node=node,
+            markdown=draft.markdown,
+            evidence=task.source_mapping.evidence if task.source_mapping else [],
+            manual_items=node.manual_fill,
+            required_fact_hints=required_fact_hints or [],
+        )
+    trusted_project_text = "\n".join(
+        [section.content for section in (selected_source_sections or [])]
+        + [user_context]
+        + list(required_fact_hints or [])
+    )
+    initial_leakage_issues = audit_reference_atom_leakage(
+        generated_markdown=draft.markdown,
+        results=reference_atom_results or [],
+        trusted_project_text=trusted_project_text,
+    )
+    leakage_issues = initial_leakage_issues
+    if initial_leakage_issues:
+        draft.markdown = llm.complete(
+            build_reference_leakage_repair_prompt(
+                generated_markdown=draft.markdown,
+                issues=initial_leakage_issues,
+                trusted_project_text=trusted_project_text,
+            )
+        )
+        draft = validate_chapter(draft, expected_title=node.title, source_count=len(task.source_matches))
+        leakage_issues = audit_reference_atom_leakage(
+            generated_markdown=draft.markdown,
+            results=reference_atom_results or [],
+            trusted_project_text=trusted_project_text,
+        )
+    initial_management_issues = audit_unsupported_management_claims(
+        generated_markdown=draft.markdown,
+        trusted_project_text=trusted_project_text,
+    )
+    management_issues = initial_management_issues
+    if initial_management_issues:
+        draft.markdown = llm.complete(
+            build_management_claim_repair_prompt(
+                generated_markdown=draft.markdown,
+                unsupported_claims=initial_management_issues,
+                trusted_project_text=trusted_project_text,
+            )
+        )
+        draft = validate_chapter(draft, expected_title=node.title, source_count=len(task.source_matches))
+        management_issues = audit_unsupported_management_claims(
+            generated_markdown=draft.markdown,
+            trusted_project_text=trusted_project_text,
+        )
+        draft.evidence_audit = audit_evidence_utilization(
+            node=node,
+            markdown=draft.markdown,
+            evidence=task.source_mapping.evidence if task.source_mapping else [],
+            manual_items=node.manual_fill,
+            required_fact_hints=required_fact_hints or [],
+        )
+    draft.generation_metadata["reference_atom_initial_leakage_issues"] = [
+        dump_model(issue) for issue in initial_leakage_issues
+    ]
+    draft.generation_metadata["reference_atom_leakage_issues"] = [dump_model(issue) for issue in leakage_issues]
+    draft.generation_metadata["unsupported_management_claims_initial"] = initial_management_issues
+    draft.generation_metadata["unsupported_management_claims"] = management_issues
+    if leakage_issues:
+        draft.validation_status = TaskStatus.needs_repair
+        draft.validation_issues.append(
+            ValidationIssue(
+                code="reference_atom_fact_leakage",
+                message="异项目参考原子中的参数或规范值缺少当前项目证据支持。",
+                severity="error",
+            )
+        )
+    if management_issues:
+        draft.validation_status = TaskStatus.needs_repair
+        draft.validation_issues.append(
+            ValidationIssue(
+                code="unsupported_management_claim",
+                message="管理主体、许可、资质、材料检验或应急要求缺少当前项目证据支持。",
+                severity="error",
+            )
+        )
     if draft.validation_status == TaskStatus.passed and _evidence_audit_requires_revision(draft.evidence_audit):
         issue_codes = ", ".join(issue.code for issue in draft.evidence_audit.issues) if draft.evidence_audit else ""
         draft.validation_status = TaskStatus.needs_repair
@@ -141,6 +271,320 @@ def _metadata_audit_requires_revision(audit: dict | None) -> bool:
     return False
 
 
+def _generate_chapter_by_writing_units(
+    *,
+    node: TemplateNode,
+    task: ChapterTask,
+    llm: LLMClient,
+    project_profile: ProjectProfile | None,
+    user_context: str,
+    global_context: str,
+    required_fact_hints: list[str],
+    generation_policy: ChapterGenerationPolicy | None,
+    writing_unit_contexts: list[ChapterWritingUnitContext],
+) -> tuple[str, list[WritingUnitTrace]]:
+    outputs: list[str] = []
+    traces: list[WritingUnitTrace] = []
+    completed_context: list[str] = []
+    for context in sorted(writing_unit_contexts, key=lambda item: item.spec.sequence):
+        prompt = build_writing_unit_prompt(
+            node=node,
+            task=task,
+            context=context,
+            project_profile=project_profile,
+            user_context=user_context,
+            global_context=global_context,
+            completed_unit_context=completed_context,
+            required_fact_hints=required_fact_hints,
+            generation_policy=generation_policy,
+        )
+        unit_markdown = _normalize_writing_unit_markdown(llm.complete(prompt), context.spec.title)
+        outputs.append(unit_markdown)
+        completed_context.append(f"{context.spec.title}：{compact_completed_unit(unit_markdown)}")
+        traces.append(
+            WritingUnitTrace(
+                unit_id=context.spec.unit_id,
+                title=context.spec.title,
+                target_word_count=context.spec.target_word_count,
+                source_section_ids=[section.id for section in context.selected_source_sections],
+                evidence_ids=[span.evidence_id for span in context.evidence_spans],
+                reference_atom_ids=[result.atom_id for result in context.reference_atom_results],
+                writing_skill_keys=list(node.matched_skill_keys),
+            )
+        )
+    return (
+        _assemble_writing_unit_chapter(
+            node=node,
+            task=task,
+            unit_outputs=outputs,
+            writing_unit_contexts=writing_unit_contexts,
+        ),
+        traces,
+    )
+
+
+def build_writing_unit_prompt(
+    *,
+    node: TemplateNode,
+    task: ChapterTask,
+    context: ChapterWritingUnitContext,
+    project_profile: ProjectProfile | None,
+    user_context: str,
+    global_context: str,
+    completed_unit_context: list[str],
+    required_fact_hints: list[str],
+    generation_policy: ChapterGenerationPolicy | None,
+) -> str:
+    guidance = guidance_for_node(node)
+    scoped_facts = extract_required_source_facts(context.evidence_spans, max_facts=12, max_per_evidence=3)
+    facts_text = "\n".join(
+        (
+            f"- fact_id: {fact.fact_id}；evidence_id: {fact.evidence_id}；section_id: {fact.section_id}；"
+            f"type: {fact.fact_type}；tokens: {'、'.join(fact.tokens) or '-'}；fact: {fact.text}"
+        )
+        for fact in scoped_facts
+    ) or "无。"
+    return "\n".join(
+        [
+            "CHAPTER_WRITING_UNIT_PROMPT",
+            "你是施工组织设计细粒度写作 agent。本次只完成当前章节中的一个写作单元，后续由系统装配整章。",
+            "",
+            f"章节标题：{node.title}",
+            f"写作单元：{context.spec.title}",
+            f"单元目标：{context.spec.objective}",
+            f"目标字数：约 {context.spec.target_word_count} 字",
+            f"写作主题：{'；'.join(context.spec.writing_topics)}",
+            f"内容功能：{'；'.join(context.spec.content_functions)}",
+            "",
+            "## 全局与已生成章节滚动概括",
+            global_context or "尚无已生成章节的滚动概括。",
+            "",
+            "## 本章已完成写作单元概括",
+            "\n".join(f"- {item}" for item in completed_unit_context[-3:]) or "无，本单元为本章首个写作单元。",
+            "",
+            "## 项目概况",
+            to_json_text(dump_model(project_profile)) if project_profile else "{}",
+            "",
+            "## 三源输入一：当前项目投标证据（唯一项目事实来源）",
+            _render_evidence_spans(context.evidence_spans),
+            "",
+            "### 当前项目来源章节全文",
+            _render_full_source_sections(
+                context.selected_source_sections,
+                target_word_count=context.spec.target_word_count,
+            ),
+            "",
+            "## required_source_facts（必须优先写入生成正文的原文事实）",
+            facts_text,
+            "",
+            "## quality_feedback_required_facts（质量审计要求本次必须承接的事实）",
+            _render_feedback_required_facts(required_fact_hints),
+            "",
+            "## 三源输入二：高相关优秀原子（异项目，仅作技术展开参考）",
+            render_reference_atoms_for_prompt(context.reference_atom_results),
+            "",
+            "## 三源输入三：写作组织技巧（仅控制结构与表达）",
+            render_writing_guidance(guidance),
+            "",
+            render_pattern_matches_for_prompt(_node_pattern_text(node), primary_key=guidance.pattern_key) or "无本地模式规则。",
+            "",
+            render_chapter_skills_for_prompt(node),
+            "",
+            "## 生成控制策略",
+            _render_generation_policy(generation_policy),
+            "",
+            "## 用户补充及历史上下文",
+            user_context or "无。",
+            "",
+            "输出规则：",
+            f"- 只输出 `### {context.spec.title}` 及其正文，不得输出整章标题、主要来源摘要、人工补充等整章模块。",
+            "- 当前项目名称、范围、工程量、参数、日期、规范和结论，只能来自“三源输入一”或用户明确补充。",
+            "- 管理主体、审批机关、许可手续、库房设置、人员资质、检查频次和验收责任也属于项目事实；投标证据未明确时不得自行补写。",
+            "- 优秀原子只借鉴工艺步骤、控制维度、检查闭环和专业表达；不得迁移其中的数值、地名、工程量、设备数量、日期或规范版本。",
+            "- 写作技巧只决定展开顺序，不是事实来源。",
+            "- 与已完成单元保持术语和施工接口一致，不重复大段已写内容；必要时用一句话衔接。",
+            "- 有证据时写到施工对象、条件、步骤、资源、控制、检查和记录；缺少关键参数时写 `【需人工补充：...】`。",
+            "- 不要写“系统依据”“根据提示词”“参考原子表明”等生成过程说明。",
+        ]
+    )
+
+
+HIGH_RISK_MANAGEMENT_FACTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("公安机关监管", ("公安机关",)),
+    ("爆破器材专用库房", ("专用库房", "爆破器材库")),
+    ("爆破器材领退销台账", ("领用、退库", "领用退库", "销毁台账")),
+    ("人员持证要求", ("持证上岗",)),
+    ("材料证明文件", ("出厂合格证", "性能检测报告")),
+    ("材料抽样及性能检验", ("抽样检验", "炸药爆速", "雷管延期时间")),
+    ("油料专用运输与防渗", ("专用容器", "防渗漏设施")),
+    ("运输路线与消防配置", ("运输车辆应配备灭火器材", "避开人员密集区")),
+    ("专项应急预案与演练", ("专项应急预案", "定期组织演练")),
+    ("无证据环保处置", ("洒水降尘", "达标排放")),
+    ("无证据设备配置", ("角度控制装置",)),
+)
+
+
+def audit_unsupported_management_claims(
+    *,
+    generated_markdown: str,
+    trusted_project_text: str,
+) -> list[str]:
+    trusted = _compact_for_match(trusted_project_text)
+    issues: list[str] = []
+    for line in generated_markdown.splitlines():
+        for clause in re.split(r"(?<=[。；])", line):
+            claim = clause.strip().lstrip("-* ")
+            if not claim:
+                continue
+            for _, phrases in HIGH_RISK_MANAGEMENT_FACTS:
+                triggered = [phrase for phrase in phrases if _compact_for_match(phrase) in _compact_for_match(claim)]
+                if triggered and not any(_compact_for_match(phrase) in trusted for phrase in triggered):
+                    if claim not in issues:
+                        issues.append(claim)
+                    break
+    return issues[:30]
+
+
+def build_management_claim_repair_prompt(
+    *,
+    generated_markdown: str,
+    unsupported_claims: list[str],
+    trusted_project_text: str,
+) -> str:
+    claims = "\n".join(f"- {item}" for item in unsupported_claims)
+    return f"""你是施工组织设计事实边界修复助手。下列管理、许可、资质、材料检验、设备或应急要求未在当前项目证据中得到支持。
+
+待修复表述：
+{claims}
+
+当前项目可信证据：
+```text
+{trusted_project_text[:20000]}
+```
+
+待修复 Markdown：
+```markdown
+{generated_markdown}
+```
+
+修复规则：
+1. 删除待修复表述中无证据的具体要求；同一句内有证据支持的工艺、参数或接口应保留并重新组织。
+2. 只有当前项目可信证据明确出现的管理主体、审批机关、许可、库房、台账、人员资质、检验频次、设备配置和应急责任可以保留。
+3. 不得用另一种说法重新引入无证据要求，不得新增事实、数值、规范或责任主体。
+4. 保持原有 Markdown 章节结构和标题，只输出修复后的完整 Markdown。"""
+
+
+def _compact_for_match(value: str) -> str:
+    return re.sub(r"[\s，,。；;：:（）()《》“”\"'、/\\-]+", "", value or "").lower()
+
+
+def _assemble_writing_unit_chapter(
+    *,
+    node: TemplateNode,
+    task: ChapterTask,
+    unit_outputs: list[str],
+    writing_unit_contexts: list[ChapterWritingUnitContext],
+) -> str:
+    selected_section_ids = {
+        section.id for context in writing_unit_contexts for section in context.selected_source_sections
+    }
+    source_lines = [
+        f"- section_id: {match.section_id}；标题路径：{' > '.join(match.title_path)}；依据：{match.snippet}"
+        for match in task.source_matches
+        if match.section_id in selected_section_ids
+    ]
+    selected_evidence = [
+        span for context in writing_unit_contexts for span in context.evidence_spans
+    ]
+    seen_evidence: set[str] = set()
+    for span in selected_evidence:
+        if span.evidence_id not in seen_evidence:
+            seen_evidence.add(span.evidence_id)
+            line = (
+                f"- evidence_id: {span.evidence_id}；section_id: {span.section_id}；"
+                f"标题路径：{' > '.join(span.title_path)}；依据：{span.summary or span.quote[:180]}"
+            )
+            if line not in source_lines:
+                source_lines.append(line)
+    if not source_lines:
+        source_lines = ["- 未识别到可靠来源，正文中的缺失事实均应保留人工补充占位。"]
+    manual_lines = [f"- {item}" for item in node.manual_fill] or ["- 【无】"]
+    lines = [
+        f"# {node.title}",
+        "",
+        "## 主要来源摘要",
+        *source_lines[:10],
+        "",
+        "## 生成正文",
+        "",
+        *unit_outputs,
+        "",
+        "## 人工补充需补充",
+        *manual_lines,
+    ]
+    if node.special_notes:
+        lines.extend(["", "## 特殊备注", *[f"- {item}" for item in node.special_notes]])
+    return "\n".join(lines).strip() + "\n"
+
+
+def _normalize_writing_unit_markdown(markdown: str, title: str) -> str:
+    text = (markdown or "").strip()
+    generated = re.search(r"^##\s+生成正文\s*$\n(.*?)(?=^##\s+|\Z)", text, flags=re.M | re.S)
+    if generated:
+        text = generated.group(1).strip()
+    text = re.sub(r"^#\s+.*?\n", "", text, count=1)
+    text = re.sub(r"^##\s+(?:主要来源摘要|人工补充需补充|特殊备注)\s*$.*?(?=^##\s+|\Z)", "", text, flags=re.M | re.S)
+    text = text.strip()
+    if not re.match(r"^###\s+", text):
+        text = f"### {title}\n\n{text}"
+    else:
+        text = re.sub(r"^###\s+.*$", f"### {title}", text, count=1, flags=re.M)
+    return text.strip()
+
+
+def _remove_supported_manual_placeholders(markdown: str, supported_items: list[str]) -> str:
+    match = re.search(r"(^##\s+人工补充需补充\s*$\n)(.*?)(?=^##\s+|\Z)", markdown, flags=re.M | re.S)
+    if not match:
+        return markdown
+    block = match.group(2)
+    kept = [
+        line
+        for line in block.splitlines()
+        if not any(item.strip() and item.strip() in line for item in supported_items)
+    ]
+    if not any(line.strip("- ").strip() for line in kept):
+        kept = ["- 【无】"]
+    replacement = match.group(1) + "\n".join(kept).strip() + "\n"
+    return markdown[: match.start()] + replacement + markdown[match.end():]
+
+
+def _render_evidence_spans(spans) -> str:
+    if not spans:
+        return "本单元未匹配到细粒度证据；不得生成确定性项目事实。"
+    lines: list[str] = []
+    for span in spans:
+        line_range = (
+            f"L{span.start_line}-L{span.end_line}"
+            if span.start_line is not None and span.end_line is not None
+            else "unknown"
+        )
+        lines.extend(
+            [
+                f"### evidence_id: {span.evidence_id}",
+                f"- section_id: {span.section_id}",
+                f"- 标题路径: {' > '.join(span.title_path)}",
+                f"- 行号范围: {line_range}",
+                f"- 用途: {span.usage}",
+                "- 原文摘录:",
+                "```text",
+                span.quote.strip(),
+                "```",
+                "",
+            ]
+        )
+    return "\n".join(lines).strip()
+
+
 def build_chapter_prompt(
     *,
     node: TemplateNode,
@@ -150,6 +594,8 @@ def build_chapter_prompt(
     user_context: str = "",
     required_fact_hints: list[str] | None = None,
     generation_policy: ChapterGenerationPolicy | None = None,
+    reference_atom_results: list[AtomRetrievalResult] | None = None,
+    global_context: str = "",
 ) -> str:
     word_count_instruction = _word_count_instruction(task.target_word_count)
     source_lines = [
@@ -163,6 +609,7 @@ def build_chapter_prompt(
     guidance = guidance_for_node(node)
     writing_guidance = render_writing_guidance(guidance)
     local_pattern = render_pattern_matches_for_prompt(_node_pattern_text(node), primary_key=guidance.pattern_key)
+    specialized_skills = render_chapter_skills_for_prompt(node)
     return "\n".join(
         [
             "你是施工组织设计正文生成 agent。你必须依据真实投标文档内容生成当前小章节 Markdown。",
@@ -170,6 +617,9 @@ def build_chapter_prompt(
             "",
             "输入一：项目概况 JSON",
             to_json_text(dump_model(project_profile)) if project_profile else "{}",
+            "",
+            "## 全局与已生成章节滚动概括",
+            global_context or "尚无已生成章节的滚动概括。",
             "",
             "输入二：当前小章节模板 JSON",
             to_json_text(dump_model(node)),
@@ -187,6 +637,12 @@ def build_chapter_prompt(
             "",
             "## 本地施组模式库规则",
             local_pattern or "无。",
+            "",
+            "## 当前章节特化 skill",
+            specialized_skills,
+            "",
+            "## 优秀施组参考原子（异项目、非事实来源）",
+            render_reference_atoms_for_prompt(reference_atom_results or []),
             "",
             "## 模板主要来源",
             *[f"- {item}" for item in node.source_rules],
@@ -235,7 +691,10 @@ def build_chapter_prompt(
             "",
             "正文写作规则：",
             "- 先按“本地施组模式库规则”判断本章应该覆盖哪些组织要点，如对象、范围、工艺流程、资源条件、质量控制、安全风险、环保文明、检查验收、资料闭环等；再用当前项目的来源证据填充这些要点。",
+            "- 按“当前章节特化 skill”规定的专业展开顺序组织本章；skill只控制章节结构、工序顺序和检查闭环，不提供项目事实。",
             "- 本地施组样本中的高频标题和写法只作为目录与要点组织参考，不作为事实来源；不要为了接近人类参考文段而扩写无证据内容。",
+            "- “优秀施组参考原子”只用于补足工艺步骤、控制维度、检查闭环和专业表达；其中数值、地名、工程量、设备数量、日期和规范版本均不得直接迁移。",
+            "- 不得整段照搬参考原子。参考原子与当前证据冲突时以当前项目证据为准；当前项目无依据时使用人工补充占位。",
             "- 参考“施组写作模式参考”的推荐展开顺序组织正文，但不得新增固定输出模块；这些只是写作骨架，不是事实来源。",
             "- 优先依据“原文文段映射表”组织正文；涉及项目事实、工程量、工艺参数、质量安全要求时，应从 evidence_id 对应原文摘录中取材。",
             "- `required_source_facts` 中列出的数字、单位、日期、规范编号、施工参数和工艺控制点必须优先写入“生成正文”；确因章节范围不适用而不写时，必须在“人工补充需补充”说明原因。",
@@ -257,15 +716,22 @@ def build_generation_metadata(
     node: TemplateNode,
     task: ChapterTask,
     generation_policy: ChapterGenerationPolicy | None = None,
+    reference_atom_results: list[AtomRetrievalResult] | None = None,
+    writing_unit_traces: list[WritingUnitTrace] | None = None,
 ) -> dict:
     guidance = guidance_for_node(node)
     pattern_text = _node_pattern_text(node)
     local_matches = match_patterns_for_text(pattern_text, limit=3)
+    skill_pattern_key = _skill_pattern_key(node)
+    if skill_pattern_key:
+        local_matches = [match for match in local_matches if match.pattern_key == skill_pattern_key]
     selected_pattern_keys: list[str] = []
-    if guidance.pattern_key:
+    if skill_pattern_key:
+        selected_pattern_keys.append(skill_pattern_key)
+    elif guidance.pattern_key:
         selected_pattern_keys.append(guidance.pattern_key)
     selected_pattern_keys.extend(match.pattern_key for match in local_matches)
-    if generation_policy and generation_policy.writing_pattern_matches:
+    if not skill_pattern_key and generation_policy and generation_policy.writing_pattern_matches:
         selected_pattern_keys.extend(generation_policy.writing_pattern_matches)
     selected_pattern_keys = list(dict.fromkeys(selected_pattern_keys))
     return {
@@ -277,6 +743,21 @@ def build_generation_metadata(
         "local_pattern_matches": [dump_model(match) for match in local_matches],
         "selected_pattern_keys": selected_pattern_keys,
         "generation_policy": dump_model(generation_policy) if generation_policy else None,
+        "matched_skill_keys": node.matched_skill_keys,
+        "chapter_summary": node.chapter_summary,
+        "reference_atoms": [
+            {
+                "atom_id": result.atom_id,
+                "retrieval_score": result.score,
+                "match_reason": result.match_reason,
+                "prompt_use": result.prompt_use,
+                "source_project": result.atom.project_name,
+                "source_title_path": result.atom.title_path,
+            }
+            for result in (reference_atom_results or [])
+        ],
+        "writing_units": [dump_model(item) for item in (writing_unit_traces or [])],
+        "generation_granularity": "writing_unit" if writing_unit_traces else "chapter",
         "pattern_evidence_scope": (
             "Local construction-plan patterns are structural guidance only; project facts must come from mapped "
             "section_id/evidence_id, user supplements, or manual placeholders."
@@ -284,9 +765,11 @@ def build_generation_metadata(
         "prompt_sections": [
             "施工组织写作模式参考",
             "本地施组模式库规划",
+            "当前章节特化 skill",
             "生成控制策略",
             "原文文段映射表",
             "required_source_facts",
+            "优秀施组参考原子",
         ],
         "non_factual_pattern_rules": [
             "Use corpus patterns to decide subsection order, key point coverage, and control-loop shape.",
@@ -294,6 +777,31 @@ def build_generation_metadata(
             "Keep missing drawings, approvals, final parameters, site measurements, personnel/equipment lists, and acceptance conclusions as manual placeholders unless source evidence supports them.",
         ],
     }
+
+
+def _specialize_generation_policy(
+    node: TemplateNode,
+    policy: ChapterGenerationPolicy | None,
+) -> ChapterGenerationPolicy | None:
+    pattern_key = _skill_pattern_key(node)
+    if policy is None or not pattern_key:
+        return policy
+    return policy.model_copy(
+        update={
+            "writing_pattern_key": pattern_key,
+            "writing_pattern_matches": [pattern_key],
+            "pattern_prompt_cards": [],
+        },
+        deep=True,
+    )
+
+
+def _skill_pattern_key(node: TemplateNode) -> str | None:
+    for key in node.matched_skill_keys:
+        pattern_key = SKILL_PATTERN_KEYS.get(key)
+        if pattern_key:
+            return pattern_key
+    return None
 
 
 def build_repair_prompt(*, node: TemplateNode, task: ChapterTask, bad_markdown: str, required_fact_hints: list[str] | None = None) -> str:

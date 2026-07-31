@@ -242,6 +242,8 @@ def _repair_profile_semantics(profile: ProjectProfile, sections: list[MarkdownSe
         if replacement:
             data[field] = replacement
             missing_items.append(f"ProjectProfile field `{field}` was repaired from source text.")
+    data["main_methods"] = _dedupe([*(data.get("main_methods") or []), *source_profile.main_methods])[:12]
+    data["risk_points"] = _dedupe([*(data.get("risk_points") or []), *source_profile.risk_points])[:10]
 
     existing_source_ids = [section_id for section_id in data.get("source_section_ids") or [] if section_id]
     for section_id in source_profile.source_section_ids:
@@ -358,10 +360,43 @@ def _extract_quantities(text: str) -> list[str]:
 
 def _extract_methods(text: str) -> list[str]:
     methods = []
-    for keyword in ["注水降温", "注水", "钻孔", "灌注浆", "灌浆", "覆盖封堵", "覆盖", "监测评价", "生态恢复", "采坑回填", "黄土覆盖"]:
+    for keyword in [
+        "施工导流",
+        "围堰",
+        "明挖",
+        "洞室开挖",
+        "洞挖",
+        "钻爆法",
+        "爆破",
+        "锚杆",
+        "喷射混凝土",
+        "支护",
+        "混凝土浇筑",
+        "衬砌",
+        "固结灌浆",
+        "帷幕灌浆",
+        "回填灌浆",
+        "排水孔",
+        "金属结构安装",
+        "启闭机安装",
+        "砂石加工",
+        "混凝土拌和",
+        "边坡防护",
+        "注水降温",
+        "注水",
+        "钻孔",
+        "灌注浆",
+        "灌浆",
+        "覆盖封堵",
+        "覆盖",
+        "监测评价",
+        "生态恢复",
+        "采坑回填",
+        "黄土覆盖",
+    ]:
         if keyword in text and keyword not in methods:
             methods.append(keyword)
-    return methods[:10]
+    return methods[:12]
 
 
 def _extract_schedule(text: str) -> list[str]:
@@ -378,10 +413,29 @@ def _extract_quality_targets(sections: list[MarkdownSection]) -> list[str]:
 
 def _extract_risks(text: str) -> list[str]:
     risks = []
-    for keyword in ["高温火区", "裂隙", "塌陷", "采空区", "复燃", "水文地质", "生态环境", "安全风险"]:
+    for keyword in [
+        "高地应力",
+        "岩爆",
+        "大变形",
+        "涌水",
+        "突水",
+        "塌方",
+        "高边坡",
+        "深埋洞室",
+        "爆破振动",
+        "交叉作业",
+        "高温火区",
+        "裂隙",
+        "塌陷",
+        "采空区",
+        "复燃",
+        "水文地质",
+        "生态环境",
+        "安全风险",
+    ]:
         if keyword in text:
             risks.append(keyword)
-    return risks[:8]
+    return risks[:10]
 
 
 def _important_sentences(text: str, keywords: list[str], *, limit: int) -> list[str]:

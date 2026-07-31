@@ -28,6 +28,11 @@ class OutlineNodeCreateRequest(BaseModel):
     manual_fill: list[str] = Field(default_factory=list)
     special_notes: list[str] = Field(default_factory=list)
     target_word_count: int | None = None
+    origin: str = "manual"
+    template_anchor_id: str | None = None
+    source_hints: list[str] = Field(default_factory=list)
+    matched_skill_keys: list[str] = Field(default_factory=list)
+    chapter_summary: dict = Field(default_factory=dict)
 
 
 class OutlineNodeUpdateRequest(BaseModel):
@@ -41,6 +46,11 @@ class OutlineNodeUpdateRequest(BaseModel):
     manual_fill: list[str] | None = None
     special_notes: list[str] | None = None
     target_word_count: int | None = None
+    origin: str | None = None
+    template_anchor_id: str | None = None
+    source_hints: list[str] | None = None
+    matched_skill_keys: list[str] | None = None
+    chapter_summary: dict | None = None
 
 
 class SupplementRequest(BaseModel):
@@ -200,6 +210,8 @@ class ChapterResponse(BaseModel):
     draft_path: str | None = None
     source_matches: list[dict] = Field(default_factory=list)
     source_mapping: dict | None = None
+    generation_metadata: dict = Field(default_factory=dict)
+    evidence_audit: dict | None = None
     version: dict | None = None
 
 

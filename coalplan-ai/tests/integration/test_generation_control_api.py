@@ -124,8 +124,29 @@ class GenerationControlApiTest(unittest.TestCase):
                 directory_payload = directory.json()
                 self.assertIn("generation_control", directory_payload)
                 self.assertIsNotNone(directory_payload["generation_control"]["plan"])
-                self.assertEqual("template", directory_payload["outline_source"])
+                self.assertEqual("ai_plan", directory_payload["outline_source"])
                 self.assertGreater(len(directory_payload["outline"]["outline"]["generation_steps"]), 0)
+
+                experience = await client.get(f"/projects/{project_id}/experience-summary")
+                self.assertEqual(200, experience.status_code)
+                experience_payload = experience.json()
+                self.assertEqual("chapter", experience_payload["stage"])
+                self.assertGreater(experience_payload["progress"]["outline_nodes"], 0)
+                self.assertIn("reference_library", experience_payload)
+
+                ux_nodes = (await client.get(f"/projects/{project_id}/outline-nodes")).json()
+                ux_leaf = next(node for node in ux_nodes if node.get("chapter_summary", {}).get("generation_role") == "leaf")
+                preflight = await client.get(
+                    f"/projects/{project_id}/chapters/{ux_leaf['node_id']}/writing-units"
+                )
+                self.assertEqual(200, preflight.status_code)
+                preflight_payload = preflight.json()
+                self.assertTrue(preflight_payload["writing_units"])
+                self.assertEqual(
+                    {"bid_evidence", "reference_atoms", "writing_skills"},
+                    set(preflight_payload["trust_contract"]),
+                )
+                self.assertIn("readiness", preflight_payload)
 
                 outline_steps = await client.get(f"/projects/{project_id}/outline-generation-steps")
                 self.assertEqual(200, outline_steps.status_code)
@@ -590,7 +611,10 @@ class GenerationControlApiTest(unittest.TestCase):
 
                 split_child_generated = await client.post(f"/projects/{project_id}/chapters/{split_child['node_id']}/generate")
                 self.assertEqual(200, split_child_generated.status_code)
-                self.assertEqual(split_child["node_id"], split_child_generated.json()["node_id"])
+                split_child_payload = split_child_generated.json()
+                self.assertEqual(split_child["node_id"], split_child_payload["node_id"])
+                self.assertIn("selected_pattern_keys", split_child_payload["generation_metadata"])
+                self.assertIsNotNone(split_child_payload["evidence_audit"])
                 split_child_workspace = await client.get(f"/projects/{project_id}/chapters/{split_child['node_id']}/workspace")
                 self.assertEqual(200, split_child_workspace.status_code)
                 self.assertTrue(split_child_workspace.json().get("selected_version_id"))

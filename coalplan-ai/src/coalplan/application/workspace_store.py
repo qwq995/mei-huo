@@ -63,6 +63,11 @@ class WorkspaceStore:
                 manual_fill_json=_json(payload.get("manual_fill", [])),
                 special_notes_json=_json(payload.get("special_notes", [])),
                 target_word_count=payload.get("target_word_count"),
+                origin=payload.get("origin", "user"),
+                template_anchor_id=payload.get("template_anchor_id"),
+                source_hints_json=_json(payload.get("source_hints", [])),
+                matched_skill_keys_json=_json(payload.get("matched_skill_keys", [])),
+                chapter_summary_json=_json(payload.get("chapter_summary", {})),
             )
             session.add(row)
             session.commit()
@@ -71,7 +76,16 @@ class WorkspaceStore:
     def update_outline_node(self, project_id: str, node_id: str, payload: dict) -> dict:
         with self.session_factory() as session:
             row = _get_outline(session, project_id, node_id)
-            for key in ["title", "parent_id", "level", "sort_order", "enabled", "target_word_count"]:
+            for key in [
+                "title",
+                "parent_id",
+                "level",
+                "sort_order",
+                "enabled",
+                "target_word_count",
+                "origin",
+                "template_anchor_id",
+            ]:
                 if key in payload:
                     setattr(row, key, payload[key])
             mapping = {
@@ -79,6 +93,9 @@ class WorkspaceStore:
                 "auto_fill": "auto_fill_json",
                 "manual_fill": "manual_fill_json",
                 "special_notes": "special_notes_json",
+                "source_hints": "source_hints_json",
+                "matched_skill_keys": "matched_skill_keys_json",
+                "chapter_summary": "chapter_summary_json",
             }
             for key, column in mapping.items():
                 if key in payload:
@@ -96,6 +113,46 @@ class WorkspaceStore:
                     row.updated_at = datetime.now()
             session.commit()
             return self.list_outline_nodes(project_id)
+
+    def sync_outline_tree(self, project_id: str, nodes: list[TemplateNode]) -> list[dict]:
+        desired = list(_walk_template_nodes(nodes))
+        with self.session_factory() as session:
+            existing = {
+                row.node_id: row
+                for row in session.query(ProjectOutlineNodeRecord).filter_by(project_id=project_id).all()
+            }
+            desired_ids: set[str] = set()
+            for sort_order, (node, parent_id) in enumerate(desired, start=1):
+                desired_ids.add(node.id)
+                row = existing.get(node.id)
+                if row is None:
+                    row = ProjectOutlineNodeRecord(
+                        id=f"{project_id}:{node.id}",
+                        project_id=project_id,
+                        node_id=node.id,
+                    )
+                    session.add(row)
+                row.parent_id = parent_id
+                row.title = node.title
+                row.level = node.level
+                row.sort_order = sort_order
+                row.enabled = True
+                row.source_rules_json = _json(node.source_rules)
+                row.auto_fill_json = _json(node.auto_fill)
+                row.manual_fill_json = _json(node.manual_fill)
+                row.special_notes_json = _json(node.special_notes)
+                row.target_word_count = node.target_word_count
+                row.origin = node.origin
+                row.template_anchor_id = node.template_anchor_id
+                row.source_hints_json = _json(node.source_hints)
+                row.matched_skill_keys_json = _json(node.matched_skill_keys)
+                row.chapter_summary_json = _json(node.chapter_summary)
+                row.updated_at = datetime.now()
+            for node_id, row in existing.items():
+                if node_id not in desired_ids and row.selected_version_id is None:
+                    row.enabled = False
+            session.commit()
+        return self.list_outline_nodes(project_id)
 
     def delete_outline_node(self, project_id: str, node_id: str) -> None:
         with self.session_factory() as session:
@@ -124,6 +181,11 @@ class WorkspaceStore:
                         manual_fill=row["manual_fill"],
                         special_notes=row["special_notes"],
                         target_word_count=row.get("target_word_count"),
+                        origin=row.get("origin", "template"),
+                        template_anchor_id=row.get("template_anchor_id"),
+                        source_hints=row.get("source_hints", []),
+                        matched_skill_keys=row.get("matched_skill_keys", []),
+                        chapter_summary=row.get("chapter_summary", {}),
                         children=build(row["node_id"]),
                     )
                 )
@@ -432,17 +494,34 @@ class WorkspaceStore:
                             manual_fill_json=_json(patch.get("manual_fill", [])),
                             special_notes_json=_json(patch.get("special_notes", [])),
                             target_word_count=patch.get("target_word_count"),
+                            origin=patch.get("origin", "hybrid"),
+                            template_anchor_id=patch.get("template_anchor_id"),
+                            source_hints_json=_json(patch.get("source_hints", [])),
+                            matched_skill_keys_json=_json(patch.get("matched_skill_keys", [])),
+                            chapter_summary_json=_json(patch.get("chapter_summary", {})),
                         )
                         session.add(row)
                         continue
                     for key, value in patch.items():
-                        if key in {"title", "level", "sort_order", "enabled", "parent_id", "target_word_count"}:
+                        if key in {
+                            "title",
+                            "level",
+                            "sort_order",
+                            "enabled",
+                            "parent_id",
+                            "target_word_count",
+                            "origin",
+                            "template_anchor_id",
+                        }:
                             setattr(row, key, value)
                     json_fields = {
                         "source_rules": "source_rules_json",
                         "auto_fill": "auto_fill_json",
                         "manual_fill": "manual_fill_json",
                         "special_notes": "special_notes_json",
+                        "source_hints": "source_hints_json",
+                        "matched_skill_keys": "matched_skill_keys_json",
+                        "chapter_summary": "chapter_summary_json",
                     }
                     for key, column in json_fields.items():
                         if key in patch:
@@ -765,8 +844,19 @@ def _outline_dict(row: ProjectOutlineNodeRecord) -> dict:
         "manual_fill": _loads(row.manual_fill_json),
         "special_notes": _loads(row.special_notes_json),
         "target_word_count": row.target_word_count,
+        "origin": row.origin,
+        "template_anchor_id": row.template_anchor_id,
+        "source_hints": _loads(row.source_hints_json),
+        "matched_skill_keys": _loads(row.matched_skill_keys_json),
+        "chapter_summary": _loads(row.chapter_summary_json),
         "selected_version_id": row.selected_version_id,
     }
+
+
+def _walk_template_nodes(nodes: list[TemplateNode], parent_id: str | None = None):
+    for node in nodes:
+        yield node, parent_id
+        yield from _walk_template_nodes(node.children, node.id)
 
 
 def _supplement_dict(row: ChapterSupplementRecord) -> dict:

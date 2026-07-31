@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from coalplan.application.run_generation_pipeline import GenerationPipeline
 from coalplan.application.workspace_store import WorkspaceStore
 from coalplan.infrastructure.database.repository import DatabaseProjectRepository
+from coalplan.infrastructure.database.reference_repository import ReferenceLibraryRepository
 from coalplan.infrastructure.database.session import create_session_factory, init_database, sqlite_url_for_storage
 from coalplan.infrastructure.llm.fake_llm import FakeLLMClient
 from coalplan.infrastructure.llm.openai_compatible import OpenAICompatibleLLMClient
@@ -21,6 +22,7 @@ from coalplan.interfaces.api.routes_artifacts import router as artifacts_router
 from coalplan.interfaces.api.routes_generation import router as generation_router
 from coalplan.interfaces.api.routes_pattern_library import router as pattern_library_router
 from coalplan.interfaces.api.routes_projects import router as projects_router
+from coalplan.interfaces.api.routes_reference_library import router as reference_library_router
 from coalplan.interfaces.api.routes_templates import router as templates_router
 from coalplan.interfaces.api.routes_workspace import router as workspace_router
 from coalplan.settings import Settings, get_settings
@@ -38,12 +40,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.pipeline = build_pipeline(settings)
     app.state.workspace_store = app.state.pipeline.workspace_store
+    app.state.reference_library = app.state.pipeline.reference_library
     app.include_router(projects_router)
     app.include_router(templates_router)
     app.include_router(generation_router)
     app.include_router(artifacts_router)
     app.include_router(workspace_router)
     app.include_router(pattern_library_router)
+    app.include_router(reference_library_router)
     return app
 
 
@@ -57,6 +61,7 @@ def build_pipeline(settings: Settings) -> GenerationPipeline:
     init_database(session_factory)
     artifacts = LocalArtifactRepository(storage_root / "artifacts")
     workspace_store = WorkspaceStore(session_factory, artifacts)
+    reference_library = ReferenceLibraryRepository(session_factory)
     llm = _build_llm(settings.llm_provider, settings)
     structured_llm = _build_llm(settings.structured_llm_provider, settings) if settings.structured_llm_provider else None
     return GenerationPipeline(
@@ -68,6 +73,7 @@ def build_pipeline(settings: Settings) -> GenerationPipeline:
         llm=llm,
         structured_llm=structured_llm,
         workspace_store=workspace_store,
+        reference_library=reference_library,
     )
 
 

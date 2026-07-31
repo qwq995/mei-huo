@@ -66,6 +66,19 @@ MANUAL_HINTS = {
     "图纸": {"图纸", "设计", "坐标", "桩号", "断面"},
     "审批": {"审批", "批复", "报审", "许可"},
 }
+MANUAL_SPECIFIC_DETAIL_TERMS = {
+    "名单",
+    "姓名",
+    "联系人",
+    "电话",
+    "证书",
+    "编号",
+    "路线",
+    "审批结论",
+    "报警阈值",
+    "坐标",
+    "实测",
+}
 
 STOP_TERMS = {
     "本工程",
@@ -190,7 +203,13 @@ def audit_evidence_utilization(
                 suggested_action="regenerate",
             )
         )
-    if audit_spans and coverage_ratio is not None and coverage_ratio < 0.35 and len(unused_high_value_ids) >= 2:
+    if (
+        audit_spans
+        and coverage_ratio is not None
+        and coverage_ratio < 0.35
+        and len(unused_high_value_ids) >= 2
+        and node.title.strip() not in {"前言", "编制说明"}
+    ):
         issues.append(
             EvidenceUtilizationIssue(
                 code="low_evidence_utilization",
@@ -390,6 +409,8 @@ def _manual_items_with_source_support(
     supported: list[str] = []
     evidence_text = _normalize("\n".join(f"{span.summary}\n{span.quote}" for span in evidence))
     for item in items:
+        if any(term in item for term in MANUAL_SPECIFIC_DETAIL_TERMS) and _normalize(item) not in evidence_text:
+            continue
         item_terms = _manual_support_terms(item)
         if not item_terms:
             continue
@@ -422,9 +443,7 @@ def _manual_support_terms(item: str) -> set[str]:
 
 def _evidence_tokens(span: SourceEvidenceSpan) -> set[str]:
     text = "\n".join([span.summary or "", span.quote or "", " ".join(span.matched_terms or [])])
-    tokens = set(NUMERIC_FACT_RE.findall(text))
-    tokens.update(DATE_RE.findall(text))
-    tokens.update(STANDARD_RE.findall(text))
+    tokens = set(_fact_tokens(text))
     tokens.update(_content_terms(text))
     return {_normalize(token) for token in tokens if _normalize(token)}
 
@@ -488,13 +507,17 @@ def _split_long_fact_sentence(text: str) -> list[str]:
 def _fact_tokens(text: str) -> list[str]:
     ordered: list[str] = []
     for regex in (DATE_RE, STANDARD_RE, NUMERIC_FACT_RE):
-        for token in regex.findall(text):
-            if isinstance(token, tuple):
-                token = "".join(token)
-            token = token.strip()
+        for match in regex.finditer(text):
+            if regex is NUMERIC_FACT_RE and _is_section_number_artifact(text, match.start()):
+                continue
+            token = match.group(0).strip()
             if token and token not in ordered:
                 ordered.append(token)
     return ordered
+
+
+def _is_section_number_artifact(text: str, start: int) -> bool:
+    return start >= 2 and text[start - 1] in ".．" and text[start - 2].isdigit()
 
 
 def _fact_type(text: str) -> str:

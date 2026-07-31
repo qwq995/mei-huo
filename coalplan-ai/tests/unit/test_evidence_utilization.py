@@ -2,12 +2,76 @@ from __future__ import annotations
 
 import unittest
 
-from coalplan.application.evidence_utilization import audit_evidence_utilization
+from coalplan.application.evidence_utilization import audit_evidence_utilization, extract_required_source_facts
 from coalplan.domain.outline import SourceEvidenceSpan
 from coalplan.domain.templates import TemplateNode
 
 
 class EvidenceUtilizationTest(unittest.TestCase):
+    def test_preface_low_coverage_does_not_force_regeneration(self) -> None:
+        node = TemplateNode(id="preface", title="前言", level=1)
+        evidence = [
+            SourceEvidenceSpan(
+                evidence_id=f"ev_{index}",
+                section_id=f"sec_{index}",
+                title_path=["工程概况"],
+                quote=f"项目条件说明{index}，包含施工范围、道路运输和资源组织要求。",
+                summary=f"项目条件说明{index}",
+                confidence=0.9,
+            )
+            for index in range(3)
+        ]
+        markdown = "# 前言\n\n## 生成正文\n\n本文件用于说明施工组织设计的编制目标和适用范围。"
+
+        audit = audit_evidence_utilization(node=node, markdown=markdown, evidence=evidence)
+
+        self.assertNotIn("low_evidence_utilization", {issue.code for issue in audit.issues})
+
+    def test_section_number_suffix_is_not_treated_as_quantity(self) -> None:
+        evidence = [
+            SourceEvidenceSpan(
+                evidence_id="ev_numbering",
+                section_id="sec_safety",
+                title_path=["安全管理", "6.4.3.1"],
+                quote="6.4.3.1项目部建立危险源预控制度。",
+                summary="6.7.5.2人体暴露于潜在危险环境中的频繁程度(E)。",
+            )
+        ]
+
+        facts = extract_required_source_facts(evidence)
+
+        self.assertFalse(any("3.1项" in fact.tokens or "5.2人" in fact.tokens for fact in facts))
+
+    def test_specific_certificate_details_remain_manual_without_actual_list(self) -> None:
+        node = TemplateNode(
+            id="safety",
+            title="危险源辨识与分级管控",
+            level=3,
+            manual_fill=["特种作业人员和证书"],
+        )
+        evidence = [
+            SourceEvidenceSpan(
+                evidence_id="ev_training",
+                section_id="sec_training",
+                title_path=["安全管理", "教育培训"],
+                quote="特种作业人员应持证上岗，并接受安全技术交底。",
+                summary="人员持证要求",
+            )
+        ]
+        markdown = "\n".join(
+            [
+                "# 危险源辨识与分级管控",
+                "## 生成正文",
+                "特种作业人员应持证上岗。",
+                "## 人工补充需补充",
+                "- 特种作业人员和证书：需补充人员名单及证书编号。",
+            ]
+        )
+
+        audit = audit_evidence_utilization(node=node, markdown=markdown, evidence=evidence)
+
+        self.assertEqual([], audit.manual_items_with_source_support)
+
     def test_detects_manual_placeholder_supported_by_source_evidence(self) -> None:
         node = TemplateNode(
             id="overview",

@@ -38,3 +38,13 @@ def _ensure_lightweight_sqlite_migrations(engine) -> None:
     with engine.begin() as connection:
         if "target_word_count" not in columns:
             connection.execute(text("ALTER TABLE project_outline_nodes ADD COLUMN target_word_count INTEGER"))
+        additions = {
+            "origin": "TEXT NOT NULL DEFAULT 'template'",
+            "template_anchor_id": "TEXT",
+            "source_hints_json": "TEXT NOT NULL DEFAULT '[]'",
+            "matched_skill_keys_json": "TEXT NOT NULL DEFAULT '[]'",
+            "chapter_summary_json": "TEXT NOT NULL DEFAULT '{}'",
+        }
+        for column, ddl in additions.items():
+            if column not in columns:
+                connection.execute(text(f"ALTER TABLE project_outline_nodes ADD COLUMN {column} {ddl}"))

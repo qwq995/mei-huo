@@ -1,0 +1,4 @@
+interface:
+  display_name: "环境文明章节"
+  short_description: "Expand environmental chapters from evidence"
+  default_prompt: "Use $construction-environment-chapter to expand and draft a source-grounded environment chapter."

@@ -9,6 +9,12 @@ from coalplan.application.content_revision_plan import build_content_revision_pl
 from coalplan.application.current_execution_window import build_current_execution_window, render_current_execution_window_markdown
 from coalplan.application.generate_chapter import generate_chapter
 from coalplan.application.generate_project_profile import generate_project_profile
+from coalplan.application.generation_context import (
+    chapter_summary_patch,
+    initialize_generation_context,
+    render_generation_context_for_prompt,
+    update_generation_context,
+)
 from coalplan.application.generation_metadata_audit import audit_version_generation_metadata
 from coalplan.application.generation_readiness import build_generation_readiness_report, render_generation_readiness_markdown
 from coalplan.application.generation_control_plan import (
@@ -53,6 +59,15 @@ from coalplan.application.quality_iteration_learning import (
     build_quality_iteration_learning_report,
     render_quality_iteration_learning_report,
 )
+from coalplan.application.reference_atom_retrieval import prefilter_reference_atoms, retrieve_reference_atoms
+from coalplan.application.chapter_writing_guidance import guidance_for_node
+from coalplan.application.chapter_writing_units import (
+    ChapterWritingUnitContext,
+    flatten_reference_atom_results,
+    plan_chapter_writing_units,
+    select_evidence_for_writing_unit,
+    select_sections_for_writing_unit,
+)
 from coalplan.application.revision_decision import build_revision_decisions, render_revision_decisions
 from coalplan.application.serialization import dump_model, to_json_text
 from coalplan.application.pattern_card_usage_audit import audit_pattern_card_usage
@@ -62,6 +77,9 @@ from coalplan.domain.documents import stable_id
 from coalplan.domain.enums import RunStatus, TaskStatus
 from coalplan.domain.generation_control import ChapterRevisionDecision, GenerationControlPlan, QualityFeedbackPlan
 from coalplan.domain.generation import ChapterDraft, ChapterTask, GenerationRun, Project
+from coalplan.domain.generation_context import WritingUnitSpec, WritingUnitTrace
+from coalplan.domain.outline import ChapterSummary
+from coalplan.domain.reference_library import AtomRetrievalQuery, AtomRetrievalResult, ChapterAtomUsage
 from coalplan.domain.templates import TemplateNode, TemplateTree, iter_template_nodes
 from coalplan.infrastructure.markdown.renderer import merge_template_tree_markdowns
 from coalplan.domain.validation import ValidationIssue
@@ -84,6 +102,7 @@ class GenerationPipeline:
         llm: LLMClient,
         structured_llm: StructuredLLMClient | None = None,
         workspace_store=None,
+        reference_library=None,
     ) -> None:
         self.projects = projects
         self.artifacts = artifacts
@@ -93,6 +112,7 @@ class GenerationPipeline:
         self.llm = llm
         self.structured_llm = structured_llm
         self.workspace_store = workspace_store
+        self.reference_library = reference_library
         self._drafts: dict[str, list[ChapterDraft]] = {}
 
     def create_project(self, name: str, template_id: str = "coal_fire") -> Project:
@@ -115,24 +135,35 @@ class GenerationPipeline:
         project = load_template_tree(project, template_id=template_id, loader=self.templates)
         return self.projects.save(project)
 
-    def prepare_directory(self, project_id: str) -> Project:
+    def prepare_directory(self, project_id: str, *, force: bool = False) -> Project:
         project = self.projects.get(project_id)
         project = self._ensure_base_context(project)
+        if force:
+            project.template_tree = self.templates.load(project.template_id)
+            project.outline_plan = None
         if project.outline_plan is None and project.template_tree is not None and project.project_profile is not None and project.source_toc is not None:
-            project.outline_plan = build_template_outline_plan(
+            base_template_tree = project.template_tree
+            project.outline_plan = plan_template_outline(
+                project_id=project.id,
                 profile=project.project_profile,
                 toc_items=project.source_toc.items,
-                template_tree=project.template_tree,
+                template_tree=base_template_tree,
+                llm=self._structured_llm(),
+                artifacts=self.artifacts,
             )
-            project.outline_plan.artifact_json_path = self.artifacts.write_text(
-                project.id,
-                "outline/generated_outline.json",
-                to_json_text(dump_model(project.outline_plan)),
+            project.template_tree = apply_outline_to_template_tree(base_template_tree, project.outline_plan)
+            if self.workspace_store is not None:
+                self.workspace_store.sync_outline_tree(project.id, project.template_tree.nodes)
+        if project.project_profile is not None:
+            project.generation_context = initialize_generation_context(
+                profile=project.project_profile,
+                outline=project.outline_plan,
+                existing=project.generation_context,
             )
-            project.outline_plan.artifact_markdown_path = self.artifacts.write_text(
+            self.artifacts.write_text(
                 project.id,
-                "outline/generated_outline.md",
-                render_outline_markdown(project.outline_plan),
+                "context/generation_context.json",
+                to_json_text(dump_model(project.generation_context)),
             )
         project = self.projects.save(project)
         project.template_tree = self._effective_template_tree(project)
@@ -206,11 +237,18 @@ class GenerationPipeline:
                 "node_id": node.node_id,
                 "title": node.title,
                 "level": node.level,
+                "parent_id": node.parent_node_id,
                 "enabled": node.enabled,
+                "origin": node.origin,
+                "template_anchor_id": node.template_anchor_id,
+                "source_hints": node.source_hints,
+                "matched_skill_keys": node.matched_skill_keys,
+                "chapter_summary": dump_model(node.chapter_summary),
                 "source_rules": node.main_sources,
                 "auto_fill": node.auto_fill,
                 "manual_fill": node.manual_fill,
                 "special_notes": node.special_notes,
+                "target_word_count": node.target_word_count,
             }
             for node in outline.nodes
         ]
@@ -1452,6 +1490,23 @@ class GenerationPipeline:
                     drafts.append(draft)
                     run.logs.append(f"{task.status.value}: {task.title}")
                     continue
+                writing_unit_contexts = self._build_writing_unit_contexts(
+                    project=project,
+                    node=node,
+                    task=task,
+                    selected_sections=selected_sections,
+                    policy=policy,
+                )
+                reference_atoms = (
+                    flatten_reference_atom_results(writing_unit_contexts)
+                    if writing_unit_contexts
+                    else self._retrieve_reference_atoms(
+                        project=project,
+                        node=node,
+                        selected_sections=selected_sections,
+                        policy=policy,
+                    )
+                )
                 draft = generate_chapter(
                     project_id=project.id,
                     node=node,
@@ -1466,8 +1521,22 @@ class GenerationPipeline:
                     ),
                     required_fact_hints=required_fact_hints,
                     generation_policy=policy,
+                    reference_atom_results=reference_atoms,
+                    writing_unit_contexts=writing_unit_contexts,
+                    global_context=render_generation_context_for_prompt(
+                        project.generation_context,
+                        current_node_id=node.id,
+                    ),
+                )
+                self._update_project_generation_context(
+                    project,
+                    node,
+                    draft,
+                    reference_atoms,
+                    trusted_project_text=_selected_source_text(task, selected_sections),
                 )
                 self._record_chapter_version(project.id, node.id, draft, "ai_generate")
+                self._record_reference_atom_usage(project.id, node.id, reference_atoms)
                 drafts.append(draft)
             except Exception as exc:
                 task.status = TaskStatus.failed
@@ -1536,6 +1605,23 @@ class GenerationPipeline:
             self._persist_validation(project.id, run, drafts=self._drafts.get(run.id, []), template_tree=project.template_tree, control_plan=control_plan)
             self.projects.save(project)
             return draft
+        writing_unit_contexts = self._build_writing_unit_contexts(
+            project=project,
+            node=node,
+            task=task,
+            selected_sections=selected_sections,
+            policy=policy,
+        )
+        reference_atoms = (
+            flatten_reference_atom_results(writing_unit_contexts)
+            if writing_unit_contexts
+            else self._retrieve_reference_atoms(
+                project=project,
+                node=node,
+                selected_sections=selected_sections,
+                policy=policy,
+            )
+        )
         draft = generate_chapter(
             project_id=project.id,
             node=node,
@@ -1551,13 +1637,193 @@ class GenerationPipeline:
             ),
             required_fact_hints=required_fact_hints,
             generation_policy=policy,
+            reference_atom_results=reference_atoms,
+            writing_unit_contexts=writing_unit_contexts,
+            global_context=render_generation_context_for_prompt(
+                project.generation_context,
+                current_node_id=node.id,
+            ),
+        )
+        self._update_project_generation_context(
+            project,
+            node,
+            draft,
+            reference_atoms,
+            trusted_project_text=revision_source_text,
         )
         self._record_chapter_version(project.id, node.id, draft, "ai_generate")
+        self._record_reference_atom_usage(project.id, node.id, reference_atoms)
         self._drafts.setdefault(run.id, []).append(draft)
         control_plan = self._generation_control_plan(project)
         self._persist_validation(project.id, run, drafts=self._drafts.get(run.id, []), template_tree=project.template_tree, control_plan=control_plan)
         self.projects.save(project)
         return draft
+
+    def preview_chapter_writing_units(self, project_id: str, node_id: str) -> dict:
+        project = self.projects.get(project_id)
+        project = self._ensure_generation_context(project)
+        project.template_tree = self._effective_template_tree(project)
+        if project.template_tree is None:
+            raise ValueError("Project template tree is not loaded.")
+        node = _find_node(project.template_tree.nodes, node_id)
+        if node is None:
+            raise KeyError(f"Unknown node_id: {node_id}")
+        control_plan = self._generation_control_plan(project)
+        policy = next((item for item in control_plan.chapter_policies if item.node_id == node_id), None)
+        units = plan_chapter_writing_units(node=node, policy=policy)
+        section_by_id = {section.id: section for section in project.sections}
+        source_candidates = [
+            section_by_id[section_id]
+            for section_id in node.source_hints
+            if section_id in section_by_id
+        ]
+        if not source_candidates:
+            matches = self.retriever.retrieve(node, project.sections, limit=6)
+            source_candidates = [
+                section_by_id[match.section_id]
+                for match in matches
+                if match.section_id in section_by_id
+            ]
+        atom_candidates = []
+        if self.reference_library is not None:
+            atoms = self.reference_library.list_atoms()
+            query = AtomRetrievalQuery(
+                project_name=project.project_profile.project_name if project.project_profile else project.name,
+                project_type=project.project_profile.project_type if project.project_profile else "",
+                chapter_title=node.title,
+                writing_topics=list(dict.fromkeys(topic for unit in units for topic in unit.writing_topics))[:16],
+                top_k=5,
+            )
+            atom_candidates = prefilter_reference_atoms(atoms, query, limit=5)
+        guidance = guidance_for_node(node)
+        return {
+            "node_id": node.id,
+            "title": node.title,
+            "target_word_count": node.target_word_count,
+            "generation_role": node.chapter_summary.get("generation_role", ""),
+            "coverage_status": node.chapter_summary.get("coverage_status", ""),
+            "writing_units": [dump_model(unit) for unit in units],
+            "trust_contract": {
+                "bid_evidence": "当前项目事实的唯一来源；生成时会细化为 section_id/evidence_id。",
+                "reference_atoms": "异项目技术参考；只借鉴工序、控制维度和检查闭环，不迁移项目参数。",
+                "writing_skills": "只控制组织顺序与表达，不作为项目事实。",
+            },
+            "source_candidates": [
+                {
+                    "section_id": section.id,
+                    "title_path": section.title_path,
+                    "snippet": re.sub(r"\s+", " ", section.content).strip()[:240],
+                }
+                for section in source_candidates[:8]
+            ],
+            "reference_atom_candidates": [
+                {
+                    "atom_id": atom.id,
+                    "project_name": atom.project_name,
+                    "title_path": atom.title_path,
+                    "process": atom.process,
+                    "quality_score": atom.quality_score,
+                    "status": atom.status.value,
+                }
+                for atom in atom_candidates
+            ],
+            "writing_skill": {
+                "pattern_key": guidance.pattern_key,
+                "structure": guidance.structure,
+                "matched_skill_keys": node.matched_skill_keys,
+            },
+            "readiness": {
+                "can_generate": bool(source_candidates),
+                "message": (
+                    "已找到投标候选来源，可开始生成；正式生成时会再次做细粒度证据映射。"
+                    if source_candidates
+                    else "尚未找到可靠投标候选来源，建议先调整目录来源规则或补充材料。"
+                ),
+            },
+        }
+
+    def get_generation_context(self, project_id: str) -> dict:
+        project = self.projects.get(project_id)
+        project = self._ensure_generation_context(project)
+        return dump_model(project.generation_context)
+
+    def get_project_experience_summary(self, project_id: str) -> dict:
+        project = self.projects.get(project_id)
+        nodes = (
+            list(iter_template_nodes(self._effective_template_tree(project).nodes))
+            if project.template_tree is not None
+            else []
+        )
+        leaves = [node for node in nodes if not node.children]
+        grounded = [
+            node for node in leaves if node.chapter_summary.get("coverage_status") == "grounded"
+        ]
+        latest_run = project.runs[-1] if project.runs else None
+        tasks = latest_run.chapter_tasks if latest_run else []
+        generated = [task for task in tasks if task.status in {TaskStatus.passed, TaskStatus.needs_repair}]
+        passed = [task for task in tasks if task.status == TaskStatus.passed]
+        needs_attention = [task for task in tasks if task.status in {TaskStatus.needs_repair, TaskStatus.failed}]
+        published_atoms = 0
+        total_atoms = 0
+        if self.reference_library is not None:
+            atoms = self.reference_library.list_atoms()
+            total_atoms = len(atoms)
+            published_atoms = sum(item.status.value == "published" for item in atoms)
+
+        if not project.sections:
+            stage = "upload"
+            headline = "先上传投标 Markdown，系统会建立可追溯的项目事实索引。"
+            actions = [{"id": "upload_bid", "label": "上传投标文档", "target_step": "upload"}]
+        elif project.outline_plan is None:
+            stage = "outline"
+            headline = "资料已就绪，下一步生成并确认项目目录。"
+            actions = [{"id": "generate_outline", "label": "生成项目目录", "target_step": "outline"}]
+        elif len(generated) < len(leaves):
+            stage = "chapter"
+            headline = f"目录已就绪，{len(grounded)}/{len(leaves)} 个叶子章节已有投标来源候选。"
+            next_node = next((node for node in leaves if node.id not in {task.node_id for task in generated}), None)
+            actions = [
+                {
+                    "id": "preview_next_chapter",
+                    "label": "查看下一章生成依据",
+                    "target_step": "chapter",
+                    "node_id": next_node.id if next_node else None,
+                }
+            ]
+        else:
+            stage = "export"
+            headline = "章节版本已形成，可处理少量待确认项并合并成稿。"
+            actions = [{"id": "review_and_merge", "label": "审阅并合并成稿", "target_step": "export"}]
+        return {
+            "project_id": project.id,
+            "stage": stage,
+            "headline": headline,
+            "progress": {
+                "source_documents": len(project.source_documents),
+                "indexed_sections": len(project.sections),
+                "outline_nodes": len(nodes),
+                "leaf_chapters": len(leaves),
+                "grounded_leaf_chapters": len(grounded),
+                "generated_chapters": len(generated),
+                "passed_chapters": len(passed),
+                "needs_attention_chapters": len(needs_attention),
+            },
+            "reference_library": {
+                "published_atoms": published_atoms,
+                "total_atoms": total_atoms,
+                "message": (
+                    f"已有 {published_atoms} 条已发布原子可参与匹配。"
+                    if published_atoms
+                    else "原子库尚无已发布内容；仍可只依据投标证据和写作技巧生成。"
+                ),
+            },
+            "actions": actions,
+            "principles": [
+                "目录建议先预览后应用，任何 AI 调整都不直接覆盖。",
+                "章节生成前展示投标来源、参考原子和写作技巧三类依据。",
+                "生成后保留 section_id、evidence_id、atom_id 与版本记录，可随时回看。",
+            ],
+        }
 
     def generate_child_chapters(
         self,
@@ -1723,15 +1989,30 @@ class GenerationPipeline:
     def _ensure_generation_context(self, project: Project) -> Project:
         project = self._ensure_base_context(project)
         if project.outline_plan is None:
+            base_template_tree = project.template_tree
             project.outline_plan = plan_template_outline(
                 project_id=project.id,
                 profile=project.project_profile,
                 toc_items=project.source_toc.items,
-                template_tree=project.template_tree,
+                template_tree=base_template_tree,
                 llm=self._structured_llm(),
                 artifacts=self.artifacts,
             )
-        project.template_tree = apply_outline_to_template_tree(project.template_tree, project.outline_plan)
+            project.template_tree = apply_outline_to_template_tree(base_template_tree, project.outline_plan)
+            if self.workspace_store is not None:
+                self.workspace_store.sync_outline_tree(project.id, project.template_tree.nodes)
+        else:
+            project.template_tree = apply_outline_to_template_tree(project.template_tree, project.outline_plan)
+        project.generation_context = initialize_generation_context(
+            profile=project.project_profile,
+            outline=project.outline_plan,
+            existing=project.generation_context,
+        )
+        self.artifacts.write_text(
+            project.id,
+            "context/generation_context.json",
+            to_json_text(dump_model(project.generation_context)),
+        )
         self._generation_control_plan(project)
         return self.projects.save(project)
 
@@ -2188,6 +2469,14 @@ class GenerationPipeline:
             tree = self._effective_template_tree(project)
             if tree is not None:
                 node_ids = [node.id for node in iter_template_nodes(tree.nodes) if not node.children]
+        try:
+            workspace_nodes = self.workspace_store.list_outline_nodes(project_id)
+        except Exception:
+            workspace_nodes = []
+        for item in workspace_nodes:
+            node_id = item.get("node_id")
+            if node_id and node_id not in node_ids:
+                node_ids.append(node_id)
 
         targets: list[dict] = []
         for node_id in node_ids:
@@ -2369,6 +2658,176 @@ class GenerationPipeline:
             return self.workspace_store.render_chapter_context(project_id, node_id)
         except Exception:
             return ""
+
+    def _build_writing_unit_contexts(
+        self,
+        *,
+        project: Project,
+        node: TemplateNode,
+        task: ChapterTask,
+        selected_sections: list,
+        policy,
+    ) -> list[ChapterWritingUnitContext]:
+        specs = plan_chapter_writing_units(node=node, policy=policy)
+        evidence = task.source_mapping.evidence if task.source_mapping else []
+        contexts: list[ChapterWritingUnitContext] = []
+        for spec in specs:
+            unit_sections = select_sections_for_writing_unit(selected_sections, spec)
+            unit_evidence = select_evidence_for_writing_unit(evidence, spec)
+            unit_atoms = self._retrieve_reference_atoms(
+                project=project,
+                node=node,
+                selected_sections=unit_sections,
+                policy=policy,
+                writing_unit=spec,
+            )
+            contexts.append(
+                ChapterWritingUnitContext(
+                    spec=spec,
+                    selected_source_sections=unit_sections,
+                    evidence_spans=unit_evidence,
+                    reference_atom_results=unit_atoms,
+                )
+            )
+        self.artifacts.write_text(
+            project.id,
+            f"control/writing-units/{node.id}.json",
+            to_json_text(
+                [
+                    {
+                        **dump_model(context.spec),
+                        "source_section_ids": [section.id for section in context.selected_source_sections],
+                        "evidence_ids": [span.evidence_id for span in context.evidence_spans],
+                        "reference_atom_ids": [item.atom_id for item in context.reference_atom_results],
+                    }
+                    for context in contexts
+                ]
+            ),
+        )
+        return contexts
+
+    def _retrieve_reference_atoms(
+        self,
+        *,
+        project: Project,
+        node: TemplateNode,
+        selected_sections: list,
+        policy,
+        writing_unit: WritingUnitSpec | None = None,
+    ) -> list[AtomRetrievalResult]:
+        if self.reference_library is None:
+            return []
+        atoms = self.reference_library.list_atoms()
+        if not atoms:
+            return []
+        profile = project.project_profile
+        evidence_summary = "\n".join(
+            f"{' > '.join(section.title_path)}：{section.content[:900]}" for section in selected_sections[:6]
+        )
+        writing_topics = list(writing_unit.writing_topics) if writing_unit else []
+        if policy is not None:
+            writing_topics = list(
+                dict.fromkeys(
+                    [
+                        *writing_topics,
+                        *(policy.source_subtopics or []),
+                        *(policy.required_subtopics or []),
+                        *(policy.pattern_required_source_facts or []),
+                    ]
+                )
+            )[:16]
+        query = AtomRetrievalQuery(
+            project_name=(profile.project_name if profile and profile.project_name else project.name),
+            project_type=(profile.project_type if profile and profile.project_type else ""),
+            chapter_title=(f"{node.title} / {writing_unit.title}" if writing_unit else node.title),
+            evidence_summary=evidence_summary,
+            writing_topics=writing_topics,
+            top_k=3 if writing_unit else 5,
+        )
+        try:
+            return retrieve_reference_atoms(atoms=atoms, query=query, llm=self._structured_llm())
+        except Exception as exc:
+            self.artifacts.write_text(
+                project.id,
+                (
+                    f"reference-atoms/{node.id}/{writing_unit.unit_id}.retrieval_error.txt"
+                    if writing_unit
+                    else f"reference-atoms/{node.id}.retrieval_error.txt"
+                ),
+                str(exc),
+            )
+            return []
+
+    def _update_project_generation_context(
+        self,
+        project: Project,
+        node: TemplateNode,
+        draft: ChapterDraft,
+        reference_atoms: list[AtomRetrievalResult],
+        *,
+        trusted_project_text: str,
+    ) -> None:
+        traces = [
+            WritingUnitTrace.model_validate(item)
+            for item in draft.generation_metadata.get("writing_units", [])
+            if isinstance(item, dict)
+        ]
+        project.generation_context, summary = update_generation_context(
+            state=project.generation_context,
+            node=node,
+            draft=draft,
+            writing_units=traces,
+            reference_atom_ids=[item.atom_id for item in reference_atoms],
+            llm=self._structured_llm(),
+            trusted_project_text=trusted_project_text,
+        )
+        node.chapter_summary = chapter_summary_patch(summary, node.chapter_summary)
+        if project.outline_plan is not None:
+            outline_node = next((item for item in project.outline_plan.nodes if item.node_id == node.id), None)
+            if outline_node is not None:
+                outline_node.chapter_summary = ChapterSummary.model_validate(
+                    chapter_summary_patch(summary, dump_model(outline_node.chapter_summary))
+                )
+        if self.workspace_store is not None:
+            try:
+                self.workspace_store.update_outline_node(
+                    project.id,
+                    node.id,
+                    {"chapter_summary": node.chapter_summary},
+                )
+            except Exception:
+                pass
+        draft.generation_metadata["generation_context_snapshot"] = {
+            "project_updated_at": project.generation_context.updated_at,
+            "generated_node_order": project.generation_context.generated_node_order,
+            "chapter_summary": dump_model(summary),
+        }
+        self.artifacts.write_text(
+            project.id,
+            "context/generation_context.json",
+            to_json_text(dump_model(project.generation_context)),
+        )
+
+    def _record_reference_atom_usage(
+        self,
+        project_id: str,
+        node_id: str,
+        results: list[AtomRetrievalResult],
+    ) -> None:
+        if self.reference_library is None:
+            return
+        for result in results:
+            self.reference_library.save_usage(
+                ChapterAtomUsage(
+                    id=f"atomuse-{uuid4().hex}",
+                    project_id=project_id,
+                    node_id=node_id,
+                    atom_id=result.atom_id,
+                    retrieval_score=result.score,
+                    match_reason=result.match_reason,
+                    prompt_use=result.prompt_use,
+                )
+            )
 
     def _quality_feedback_context(self, project_id: str) -> str:
         return render_quality_feedback_prompt_context(self._load_quality_feedback(project_id))

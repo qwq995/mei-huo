@@ -1,0 +1,4 @@
+interface:
+  display_name: "进度资源章节"
+  short_description: "Expand schedule and resource chapters from evidence"
+  default_prompt: "Use $construction-schedule-resource-chapter to expand and draft a source-grounded schedule and resource chapter."

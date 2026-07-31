@@ -1,0 +1,4 @@
+interface:
+  display_name: "施工工艺章节"
+  short_description: "Expand construction craft chapters from evidence"
+  default_prompt: "Use $construction-craft-chapter to expand and draft a source-grounded construction craft chapter."

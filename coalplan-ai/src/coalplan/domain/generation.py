@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from .documents import MarkdownSection, SourceDocument, SourceToc
 from .enums import RunStatus, TaskStatus
 from .generation_control import EvidenceUtilizationAudit
+from .generation_context import GenerationContextState
 from .outline import SourceMappingResult, TemplateOutlinePlan
 from .profile import ProjectProfile
 from .templates import TemplateTree
@@ -71,6 +72,7 @@ class Project(BaseModel):
     source_toc: SourceToc | None = None
     project_profile: ProjectProfile | None = None
     outline_plan: TemplateOutlinePlan | None = None
+    generation_context: GenerationContextState = Field(default_factory=GenerationContextState)
     template_tree: TemplateTree | None = None
     runs: list[GenerationRun] = Field(default_factory=list)
     created_at: str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
