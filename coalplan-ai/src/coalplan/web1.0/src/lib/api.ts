@@ -111,6 +111,30 @@ export type ReferenceImportResult = {
   next_step: string;
 };
 
+export type ReferenceAtomDetail = {
+  id: string;
+  document_id: string;
+  project_name: string;
+  project_type: string;
+  title_path: string[];
+  content: string;
+  start_line: number;
+  end_line: number;
+  engineering_object: string;
+  specialty: string;
+  work_item: string;
+  process: string;
+  process_stage: string;
+  chapter_type: string;
+  content_functions: string[];
+  applicability: string[];
+  prohibited_scenarios: string[];
+  fact_variables: Array<{ name: string; value: string; variable_type: string; migration_policy: string }>;
+  quality_score: number;
+  confidence: number;
+  status: string;
+};
+
 export type SourceTocItem = {
   section_id: string;
   title_path: string[];
@@ -788,6 +812,35 @@ export type ChapterResponse = {
   generation_metadata?: Record<string, unknown>;
 };
 
+export type ChapterTaskSummary = {
+  node_id: string;
+  title: string;
+  target_word_count?: number | null;
+  status: string;
+  draft_id?: string | null;
+  error_message?: string | null;
+};
+
+export type GenerationJobStatus = "queued" | "running" | "completed" | "partial" | "failed" | "interrupted";
+export type GenerationJobType = "directory_generation" | "chapter_generation" | "child_chapter_generation" | "project_generation" | "quality_audit" | "outline_proposal" | "outline_refine" | "reference_import";
+export type GenerationJob = {
+  job_id: string;
+  project_id: string;
+  job_type: GenerationJobType;
+  status: GenerationJobStatus;
+  stage: string;
+  current: number;
+  total: number;
+  message: string;
+  payload: Record<string, unknown>;
+  result: Record<string, unknown>;
+  error?: string | null;
+  retried_from?: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string | null;
+};
+
 export const API_BASE = import.meta.env.VITE_COALPLAN_API_BASE ?? "http://127.0.0.1:8010";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -802,12 +855,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const listTemplates = () => request<TemplateSummary[]>("/templates");
 export const getTemplateTree = async (templateId: string) => (await request<{ nodes: TemplateNode[] }>(`/templates/${templateId}`)).nodes;
 export const listProjects = () => request<ProjectResponse[]>("/projects");
+export const getProject = (projectId: string) => request<ProjectResponse>(`/projects/${projectId}`);
 export const getProjectExperienceSummary = (projectId: string) => request<ProjectExperienceSummary>(`/projects/${projectId}/experience-summary`);
 export const getReferenceLibrarySummary = () => request<ReferenceLibrarySummary>("/reference-library/summary");
+export const listReferenceAtoms = (status?: string) => request<ReferenceAtomDetail[]>(`/reference-library/atoms${status ? `?status=${encodeURIComponent(status)}` : ""}`);
 export const uploadReferenceMarkdown = (
   payload: { file_name: string; content: string; project_name: string; project_type: string; focus_terms?: string[]; max_batches?: number }
 ) => request<ReferenceImportResult>("/reference-library/upload-markdown", { method: "POST", body: JSON.stringify(payload) });
-export const updateReferenceAtomStatus = (atomId: string, status: "published" | "rejected" | "reviewed") =>
+export const updateReferenceAtomStatus = (atomId: string, status: "published" | "rejected" | "reviewed" | "ai_candidate") =>
   request<Record<string, unknown>>(`/reference-library/atoms/${atomId}/status`, { method: "PATCH", body: JSON.stringify({ status }) });
 export const createProject = (name: string, templateId: string) => request<ProjectResponse>("/projects", { method: "POST", body: JSON.stringify({ name, template_id: templateId }) });
 export const deleteProject = (projectId: string) => request<{ deleted: boolean }>(`/projects/${projectId}`, { method: "DELETE" });
@@ -874,6 +929,7 @@ export const generateChildChapters = (projectId: string, parentNodeId: string, r
     body: JSON.stringify({ recursive, only_pending: onlyPending, limit: limit ?? null })
   });
 export const getChapter = (projectId: string, nodeId: string) => request<ChapterResponse>(`/projects/${projectId}/chapters/${nodeId}`);
+export const listChapterTasks = (projectId: string) => request<ChapterTaskSummary[]>(`/projects/${projectId}/chapters`);
 export const createManualVersion = (projectId: string, nodeId: string, title: string, markdown: string, select = true) => request<ChapterVersion>(`/projects/${projectId}/chapters/${nodeId}/versions`, { method: "POST", body: JSON.stringify({ title, markdown, select }) });
 export const listVersions = (projectId: string, nodeId: string) => request<ChapterVersion[]>(`/projects/${projectId}/chapters/${nodeId}/versions`);
 export const getVersionContentTree = (projectId: string, nodeId: string, versionId: string) => request<GeneratedContentTree>(`/projects/${projectId}/chapters/${nodeId}/versions/${versionId}/content-tree`);
@@ -916,6 +972,11 @@ export const applyChapterProposal = (projectId: string, nodeId: string, proposal
 export const rejectChapterProposal = (projectId: string, nodeId: string, proposalId: string) => request<AIProposal>(`/projects/${projectId}/chapters/${nodeId}/proposals/${proposalId}/reject`, { method: "POST" });
 export const generateProject = (projectId: string) => request<RunResponse>(`/projects/${projectId}/generate`, { method: "POST" });
 export const mergeProject = (projectId: string) => request<RunResponse>(`/projects/${projectId}/merge`, { method: "POST" });
+export const createGenerationJob = (projectId: string, jobType: GenerationJobType, payload: Record<string, unknown> = {}) =>
+  request<GenerationJob>(`/projects/${projectId}/jobs`, { method: "POST", body: JSON.stringify({ job_type: jobType, payload }) });
+export const listGenerationJobs = (projectId: string, limit = 12) => request<GenerationJob[]>(`/projects/${projectId}/jobs/active?limit=${limit}`);
+export const getGenerationJob = (projectId: string, jobId: string) => request<GenerationJob>(`/projects/${projectId}/jobs/${jobId}`);
+export const retryGenerationJob = (projectId: string, jobId: string) => request<GenerationJob>(`/projects/${projectId}/jobs/${jobId}/retry`, { method: "POST" });
 
 export async function uploadAttachment(projectId: string, nodeId: string, file: File, description: string): Promise<ChapterAttachment> {
   const form = new FormData();

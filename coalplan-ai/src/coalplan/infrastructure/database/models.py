@@ -186,6 +186,26 @@ class GenerationRunRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
 
 
+class GenerationJobRecord(Base):
+    __tablename__ = "generation_jobs"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    job_type: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    stage: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
+    current: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    result_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error: Mapped[str | None] = mapped_column(Text)
+    retried_from: Mapped[str | None] = mapped_column(Text, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class LLMTraceRecord(Base):
     __tablename__ = "llm_traces"
 
@@ -265,4 +285,129 @@ class ChapterAtomUsageRecord(Base):
     prompt_use: Mapped[str] = mapped_column(Text, nullable=False, default="")
     decision: Mapped[str] = mapped_column(Text, nullable=False, default="selected")
     prompt_snapshot_path: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+
+
+class StandardDocumentRecord(Base):
+    __tablename__ = "standard_documents"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    standard_code: Mapped[str] = mapped_column(Text, nullable=False, default="", index=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    category: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    disciplines_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    project_types_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    source_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    file_name: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True, index=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    atom_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    warning_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
+
+
+class ConstraintAtomRecord(Base):
+    __tablename__ = "constraint_atoms"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("standard_documents.id", ondelete="CASCADE"), index=True)
+    standard_code: Mapped[str] = mapped_column(Text, nullable=False, default="", index=True)
+    standard_name: Mapped[str] = mapped_column(Text, nullable=False)
+    clause_no: Mapped[str] = mapped_column(Text, nullable=False, default="", index=True)
+    title_path_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    source_text: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_requirement: Mapped[str] = mapped_column(Text, nullable=False)
+    constraint_type: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    review_method: Mapped[str] = mapped_column(Text, nullable=False, default="semantic_review")
+    severity: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    disciplines_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    project_types_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    chapter_scopes_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    keywords_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    applicability_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    exceptions_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    check_method: Mapped[str] = mapped_column(Text, nullable=False, default="semantic_review")
+    evidence_required_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    ai_fixable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    repair_instruction: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    start_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    status: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
+
+
+class ProjectStandardMatchRecord(Base):
+    __tablename__ = "project_standard_matches"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("standard_documents.id", ondelete="CASCADE"), index=True)
+    score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    match_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    decision: Mapped[str] = mapped_column(Text, nullable=False, default="selected")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+
+    __table_args__ = (UniqueConstraint("project_id", "document_id", name="uq_project_standard_match"),)
+
+
+class ComplianceFindingRecord(Base):
+    __tablename__ = "compliance_findings"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    run_id: Mapped[str] = mapped_column(Text, nullable=False, default="", index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    node_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    chapter_title: Mapped[str] = mapped_column(Text, nullable=False)
+    chapter_version_id: Mapped[str | None] = mapped_column(Text, index=True)
+    atom_id: Mapped[str] = mapped_column(ForeignKey("constraint_atoms.id"), index=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("standard_documents.id"), index=True)
+    standard_code: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    standard_name: Mapped[str] = mapped_column(Text, nullable=False)
+    clause_no: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    constraint_text: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    verdict: Mapped[str] = mapped_column(Text, nullable=False)
+    explanation: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_quote: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    ai_fixable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    suggested_fix: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    resolution_note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    resolved_version_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
+
+
+class ComplianceReviewRunRecord(Base):
+    __tablename__ = "compliance_review_runs"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    chapter_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    matched_document_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    candidate_constraint_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    finding_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    warnings_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    summary_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class ComplianceConstraintMatchRecord(Base):
+    __tablename__ = "compliance_constraint_matches"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("compliance_review_runs.id", ondelete="CASCADE"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    node_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    chapter_version_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    atom_id: Mapped[str] = mapped_column(ForeignKey("constraint_atoms.id"), index=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("standard_documents.id"), index=True)
+    score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    match_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)

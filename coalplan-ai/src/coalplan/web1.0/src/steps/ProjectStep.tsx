@@ -3,7 +3,7 @@ import { FileStack, FileText, FolderKanban, Layers, Plus, Trash2 } from "lucide-
 import { createProject, deleteProject, listProjects, listTemplates, type ProjectResponse, type TemplateSummary } from "@/lib/api"
 import { useAsyncData } from "@/lib/useAsync"
 import { useToast } from "@/components/Toast"
-import { Button, Card, EmptyState, LoadingBlock, SectionTitle, TextInput } from "@/components/ui"
+import { Button, Card, ConfirmDialog, EmptyState, LoadingBlock, SectionTitle, TextInput } from "@/components/ui"
 import { cn } from "@/lib/utils"
 
 export function ProjectStep({
@@ -20,6 +20,7 @@ export function ProjectStep({
   const [templateId, setTemplateId] = useState("")
   const [creating, setCreating] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<ProjectResponse | null>(null)
 
   const handleCreate = async () => {
     if (!name.trim()) {
@@ -52,6 +53,7 @@ export function ProjectStep({
       toast.success("项目已删除")
       if (current?.project_id === id) onSelect(null)
       await projects.reload()
+      setDeleteTarget(null)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "删除失败")
     } finally {
@@ -119,7 +121,7 @@ export function ProjectStep({
                           variant="ghost"
                           size="icon"
                           loading={deletingId === p.project_id}
-                          onClick={() => handleDelete(p.project_id)}
+                          onClick={() => setDeleteTarget(p)}
                           aria-label="删除项目"
                           className="text-muted-foreground hover:text-[var(--color-danger)]"
                         >
@@ -176,6 +178,16 @@ export function ProjectStep({
           </Button>
         </div>
       </Card>
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        title="删除工程项目"
+        description={`将删除“${deleteTarget?.name ?? ""}”及其资料索引、目录、章节版本和生成记录，此操作无法撤销。`}
+        confirmLabel="确认删除"
+        danger
+        loading={Boolean(deletingId)}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => deleteTarget && void handleDelete(deleteTarget.project_id)}
+      />
     </div>
   )
 }

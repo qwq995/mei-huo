@@ -1,0 +1,4 @@
+interface:
+  display_name: "规范约束拆分"
+  short_description: "将工程规范 Markdown 自动拆分为可追溯审查约束"
+  default_prompt: "读取单份工程规范，提取仅用于成稿审查的约束原子，并保留条款出处、适用范围和修复边界。"

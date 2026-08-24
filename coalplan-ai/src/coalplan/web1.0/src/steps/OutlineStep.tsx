@@ -1,14 +1,11 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { ArrowRight, Calculator, ChevronRight, ListTree, Plus, RefreshCw, Save, Sparkles, Trash2, Wand2 } from "lucide-react"
 import {
   applyOutlineProposal,
   createOutlineNode,
   deleteOutlineNode,
   estimateOutlineWordCounts,
-  generateDirectory,
   listOutlineNodes,
-  proposeOutlineAIPlan,
-  proposePreGenerationOutlineRefine,
   rejectOutlineProposal,
   updateOutlineNode,
   type AIProposal,
@@ -17,8 +14,9 @@ import {
 } from "@/lib/api"
 import { useAsyncData } from "@/lib/useAsync"
 import { useToast } from "@/components/Toast"
-import { Badge, Button, Card, EmptyState, LoadingBlock, SectionTitle, TextArea, TextInput } from "@/components/ui"
+import { Badge, Button, Card, ConfirmDialog, EmptyState, LoadingBlock, SectionTitle, TextArea, TextInput } from "@/components/ui"
 import { cn } from "@/lib/utils"
+import { useJobs } from "@/components/Jobs"
 
 type TreeNode = OutlineNode & { _children: TreeNode[] }
 type RefineMode = "balanced" | "conservative" | "aggressive"
@@ -53,25 +51,51 @@ function joinLines(value?: string[]): string {
 
 export function OutlineStep({ project, onNext }: { project: ProjectResponse; onNext: () => void }) {
   const toast = useToast()
+  const { startJob, activeJob } = useJobs()
   const outline = useAsyncData<OutlineNode[]>(() => listOutlineNodes(project.project_id), [project.project_id])
   const [generating, setGenerating] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [editorDirty, setEditorDirty] = useState(false)
+  const [pendingSelection, setPendingSelection] = useState<string | null>(null)
+  const [confirmRegenerate, setConfirmRegenerate] = useState(false)
 
   const tree = useMemo(() => buildTree(outline.data ?? []), [outline.data])
   const selected = useMemo(() => outline.data?.find((n) => n.node_id === selectedId) ?? null, [outline.data, selectedId])
 
+  useEffect(() => {
+    if (!selectedId && outline.data?.length) setSelectedId(outline.data.find((node) => node.enabled !== false)?.node_id ?? outline.data[0].node_id)
+  }, [outline.data, selectedId])
+
+  useEffect(() => {
+    const finished = (event: Event) => {
+      const job = (event as CustomEvent).detail
+      if (job?.project_id === project.project_id && job?.job_type === "directory_generation" && job?.status === "completed") void outline.reload()
+    }
+    window.addEventListener("coalplan:job-finished", finished)
+    return () => window.removeEventListener("coalplan:job-finished", finished)
+  }, [outline.reload, project.project_id])
+
   const handleGenerate = async () => {
-    const replacing = Boolean(outline.data?.length)
     setGenerating(true)
     try {
-      await generateDirectory(project.project_id)
-      toast.success(replacing ? "目录已重新生成，旧目录已替换" : "目录已生成")
-      await outline.reload()
+      await startJob("directory_generation", { force: true })
+      toast.success("目录生成已开始，可切换页面并在任务中心查看进度")
+      setConfirmRegenerate(false)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "生成失败")
     } finally {
       setGenerating(false)
     }
+  }
+
+  const requestGenerate = () => {
+    if (outline.data?.length || editorDirty) setConfirmRegenerate(true)
+    else void handleGenerate()
+  }
+
+  const requestSelection = (nodeId: string) => {
+    if (editorDirty && nodeId !== selectedId) setPendingSelection(nodeId)
+    else setSelectedId(nodeId)
   }
 
   const handleEstimate = async () => {
@@ -95,7 +119,7 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
               <Button variant="ghost" size="sm" onClick={() => outline.reload()} icon={<RefreshCw className="h-3.5 w-3.5" />}>
                 刷新
               </Button>
-              <Button size="sm" onClick={handleGenerate} loading={generating} icon={<Wand2 className="h-3.5 w-3.5" />}>
+              <Button size="sm" onClick={requestGenerate} loading={generating || activeJob?.job_type === "directory_generation"} icon={<Wand2 className="h-3.5 w-3.5" />}>
                 {outline.data?.length ? "重新生成" : "生成目录"}
               </Button>
             </div>
@@ -110,7 +134,7 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
               title="尚未生成目录"
               description="点击“生成目录”，系统会根据模板、投标目录和项目概况创建项目自己的可编辑目录。"
               action={
-                <Button onClick={handleGenerate} loading={generating} icon={<Wand2 className="h-4 w-4" />}>
+                <Button onClick={requestGenerate} loading={generating} icon={<Wand2 className="h-4 w-4" />}>
                   立即生成
                 </Button>
               }
@@ -125,7 +149,7 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
               </div>
               <ul className="flex flex-col gap-1">
                 {tree.map((node) => (
-                  <OutlineRow key={node.node_id} node={node} selectedId={selectedId} onSelect={setSelectedId} />
+                  <OutlineRow key={node.node_id} node={node} selectedId={selectedId} onSelect={requestSelection} />
                 ))}
               </ul>
             </>
@@ -140,6 +164,7 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
           projectId={project.project_id}
           node={selected}
           nodeCount={outline.data?.length ?? 0}
+          onDirtyChange={setEditorDirty}
           onSaved={() => outline.reload()}
           onDeleted={() => {
             setSelectedId(null)
@@ -150,7 +175,7 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
             outline.reload()
           }}
         />
-        <AIOutlinePanel projectId={project.project_id} onApplied={() => outline.reload()} />
+        <AIOutlinePanel projectId={project.project_id} scopeNode={selected} onApplied={() => outline.reload()} />
         <Card className="p-5">
           <p className="text-sm font-medium text-foreground">目录确认完成</p>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">确认结构、字数和四模块后进入章节工作台。父节点可作为容器，主要生成叶子节点。</p>
@@ -159,12 +184,30 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
           </Button>
         </Card>
       </div>
+      <ConfirmDialog
+        open={Boolean(pendingSelection)}
+        title="放弃未保存的修改？"
+        description="当前节点还有未保存内容。继续切换会丢弃这些修改。"
+        confirmLabel="放弃并切换"
+        onClose={() => setPendingSelection(null)}
+        onConfirm={() => { setSelectedId(pendingSelection); setPendingSelection(null); setEditorDirty(false) }}
+      />
+      <ConfirmDialog
+        open={confirmRegenerate}
+        title="重新生成整个目录？"
+        description="现有目录将被替换，已有章节版本仍会保留，但节点对应关系可能变化。建议先确认当前节点修改已保存。"
+        confirmLabel="确认重新生成"
+        danger
+        loading={generating}
+        onClose={() => setConfirmRegenerate(false)}
+        onConfirm={() => void handleGenerate()}
+      />
     </div>
   )
 }
 
 function OutlineRow({ node, selectedId, onSelect }: { node: TreeNode; selectedId: string | null; onSelect: (id: string) => void }) {
-  const [open, setOpen] = useState(true)
+  const [open, setOpen] = useState((node.level ?? 1) <= 1)
   const hasChildren = node._children.length > 0
   const isSelected = node.node_id === selectedId
   const disabled = node.enabled === false
@@ -238,6 +281,7 @@ function NodeEditor({
   onSaved,
   onDeleted,
   onCreated,
+  onDirtyChange,
 }: {
   projectId: string
   node: OutlineNode | null
@@ -245,6 +289,7 @@ function NodeEditor({
   onSaved: () => void
   onDeleted: () => void
   onCreated: (nodeId: string) => void
+  onDirtyChange: (dirty: boolean) => void
 }) {
   const toast = useToast()
   const [title, setTitle] = useState(node?.title ?? "")
@@ -258,6 +303,20 @@ function NodeEditor({
   const [deleting, setDeleting] = useState(false)
   const [creating, setCreating] = useState(false)
   const [newTitle, setNewTitle] = useState("")
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const dirty = Boolean(node) && (
+    title !== (node?.title ?? "") || wordCount !== (node?.target_word_count?.toString() ?? "") ||
+    enabled !== (node?.enabled !== false) || sourceRules !== joinLines(node?.source_rules) ||
+    autoFill !== joinLines(node?.auto_fill) || manualFill !== joinLines(node?.manual_fill) ||
+    specialNotes !== joinLines(node?.special_notes)
+  )
+
+  useEffect(() => {
+    onDirtyChange(dirty)
+    const beforeUnload = (event: BeforeUnloadEvent) => { if (dirty) event.preventDefault() }
+    window.addEventListener("beforeunload", beforeUnload)
+    return () => { window.removeEventListener("beforeunload", beforeUnload); onDirtyChange(false) }
+  }, [dirty, onDirtyChange])
 
   const createNode = async (asChild: boolean) => {
     if (!newTitle.trim()) {
@@ -352,7 +411,7 @@ function NodeEditor({
               <Button onClick={save} loading={saving} icon={<Save className="h-4 w-4" />} className="flex-1">
                 保存修改
               </Button>
-              <Button variant="danger" onClick={remove} loading={deleting} icon={<Trash2 className="h-4 w-4" />}>
+              <Button variant="danger" onClick={() => setConfirmDelete(true)} loading={deleting} icon={<Trash2 className="h-4 w-4" />}>
                 删除
               </Button>
             </div>
@@ -370,6 +429,16 @@ function NodeEditor({
             </Button>
           </div>
         </div>
+        <ConfirmDialog
+          open={confirmDelete}
+          title="删除目录节点？"
+          description="该节点及其下级目录将从当前目录中删除。已生成版本不会自动并入其他章节。"
+          confirmLabel="确认删除"
+          danger
+          loading={deleting}
+          onClose={() => setConfirmDelete(false)}
+          onConfirm={() => void remove()}
+        />
       </div>
     </Card>
   )
@@ -384,8 +453,9 @@ function ModuleText({ label, value, onChange, rows = 3 }: { label: string; value
   )
 }
 
-function AIOutlinePanel({ projectId, onApplied }: { projectId: string; onApplied: () => void }) {
+function AIOutlinePanel({ projectId, scopeNode, onApplied }: { projectId: string; scopeNode: OutlineNode | null; onApplied: () => void }) {
   const toast = useToast()
+  const { startJob, activeJob } = useJobs()
   const [suggestion, setSuggestion] = useState("")
   const [mode, setMode] = useState<RefineMode>("balanced")
   const [loading, setLoading] = useState(false)
@@ -397,14 +467,8 @@ function AIOutlinePanel({ projectId, onApplied }: { projectId: string; onApplied
     setLoading(true)
     setProposal(null)
     try {
-      const result = await proposePreGenerationOutlineRefine(projectId, {
-        mode,
-        use_local_corpus: true,
-        use_human_reference: false,
-        project_type: "auto",
-      })
-      setProposal(result)
-      toast.success("已生成目录精修建议，请确认后应用")
+      await startJob("outline_refine", { mode, use_local_corpus: true, project_type: "auto" })
+      toast.success("目录精修分析已开始，完成后会自动显示方案")
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "生成精修建议失败")
     } finally {
@@ -420,9 +484,11 @@ function AIOutlinePanel({ projectId, onApplied }: { projectId: string; onApplied
     setLoading(true)
     setProposal(null)
     try {
-      const result = await proposeOutlineAIPlan(projectId, suggestion.trim())
-      setProposal(result)
-      toast.success("已生成调整方案，请确认后应用")
+      const scopedSuggestion = scopeNode
+        ? `仅调整“${scopeNode.title}”（node_id: ${scopeNode.node_id}）及其下级；保持一级目录不变，最多变更12个节点。用户要求：${suggestion.trim()}`
+        : `保持一级目录不变，最多变更12个节点。用户要求：${suggestion.trim()}`
+      await startJob("outline_proposal", { suggestion: scopedSuggestion })
+      toast.success("目录调整分析已开始，完成后会自动显示方案")
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "生成方案失败")
     } finally {
@@ -430,8 +496,23 @@ function AIOutlinePanel({ projectId, onApplied }: { projectId: string; onApplied
     }
   }
 
+  useEffect(() => {
+    const finished = (event: Event) => {
+      const job = (event as CustomEvent).detail
+      if (job?.project_id === projectId && ["outline_refine", "outline_proposal"].includes(job?.job_type) && job?.status === "completed") {
+        setProposal(job.result as AIProposal)
+      }
+    }
+    window.addEventListener("coalplan:job-finished", finished)
+    return () => window.removeEventListener("coalplan:job-finished", finished)
+  }, [projectId])
+
   const apply = async () => {
     if (!proposal) return
+    if (proposalIsBroad(proposal.preview)) {
+      toast.error("该方案影响范围过大，请缩小调整要求后重新生成")
+      return
+    }
     setApplying(true)
     try {
       await applyOutlineProposal(projectId, proposal.id)
@@ -464,6 +545,7 @@ function AIOutlinePanel({ projectId, onApplied }: { projectId: string; onApplied
     <Card className="p-5">
       <SectionTitle title="目录精修建议" description="AI 只创建待确认 proposal，不会直接覆盖目录。" />
       <div className="mt-4 flex flex-col gap-3">
+        <p className="border-l-2 border-primary/30 pl-3 text-xs text-muted-foreground">调整范围：{scopeNode ? scopeNode.title : "整个目录"}。默认保留一级目录，单次最多接受 12 个节点变更。</p>
         <div className="grid grid-cols-3 gap-2">
           {(["balanced", "conservative", "aggressive"] as RefineMode[]).map((item) => (
             <button
@@ -475,7 +557,7 @@ function AIOutlinePanel({ projectId, onApplied }: { projectId: string; onApplied
             </button>
           ))}
         </div>
-        <Button onClick={proposeRefine} loading={loading} variant="accent" icon={<Sparkles className="h-4 w-4" />}>
+        <Button onClick={proposeRefine} loading={loading || activeJob?.job_type === "outline_refine"} variant="accent" icon={<Sparkles className="h-4 w-4" />}>
           生成预生成目录精修建议
         </Button>
         <div className="flex flex-wrap gap-2">
@@ -496,7 +578,7 @@ function AIOutlinePanel({ projectId, onApplied }: { projectId: string; onApplied
           ))}
         </div>
         <TextArea rows={3} value={suggestion} onChange={(e) => setSuggestion(e.target.value)} placeholder="也可以输入自然语言调整，例如：把注水、灌浆、覆盖封堵拆成工艺、参数控制、质量记录、安全环保几个子节。" />
-        <Button onClick={proposeCustom} loading={loading} variant="outline" icon={<Wand2 className="h-4 w-4" />}>
+        <Button onClick={proposeCustom} loading={loading || activeJob?.job_type === "outline_proposal"} variant="outline" icon={<Wand2 className="h-4 w-4" />}>
           生成自定义调整方案
         </Button>
         {proposal ? (
@@ -507,7 +589,7 @@ function AIOutlinePanel({ projectId, onApplied }: { projectId: string; onApplied
               <Button size="sm" variant="outline" onClick={reject} loading={rejecting}>
                 忽略此方案
               </Button>
-              <Button size="sm" onClick={apply} loading={applying}>
+              <Button size="sm" onClick={apply} loading={applying} disabled={proposalIsBroad(proposal.preview)}>
                 确认并应用
               </Button>
             </div>
@@ -650,4 +732,10 @@ function proposalActionLabel(action: string): string {
     change: "变更",
   }
   return labels[action] ?? action
+}
+
+function proposalIsBroad(preview: Record<string, unknown>): boolean {
+  const nodes = Array.isArray(preview.nodes) ? preview.nodes as ProposalNode[] : []
+  const changed = nodes.filter((node) => (node.__action || "change") !== "keep").length
+  return nodes.length > 12 || changed > 12
 }

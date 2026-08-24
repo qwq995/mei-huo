@@ -1,14 +1,13 @@
-import { useMemo, useState } from "react"
-import { ArrowRight, BookOpenCheck, BrainCircuit, CheckCircle2, ChevronRight, Database, FileEdit, FileText, GitBranch, History, Layers3, Pencil, Save, Sparkles, Wand2, X } from "lucide-react"
+import { useEffect, useMemo, useState } from "react"
+import { AlertTriangle, ArrowLeft, ArrowRight, BookOpenCheck, BrainCircuit, CheckCircle2, ChevronRight, Database, FileEdit, FileText, GitBranch, History, Layers3, Pencil, Save, Sparkles, Wand2, X } from "lucide-react"
 import {
   applyChapterProposal,
   createManualVersion,
-  generateChapter,
-  generateChildChapters,
   getChapterGenerationPreflight,
   getChapter,
   getSourceSection,
   listOutlineNodes,
+  listChapterTasks,
   listVersions,
   proposeChapterEdit,
   rejectChapterProposal,
@@ -17,6 +16,7 @@ import {
   type ChapterGenerationPreflight,
   type SourceSection,
   type ChapterVersion,
+  type ChapterTaskSummary,
   type OutlineNode,
   type ProjectResponse,
 } from "@/lib/api"
@@ -26,6 +26,7 @@ import { Button, Card, EmptyState, LoadingBlock, SectionTitle, StatusBadge, Text
 import { Markdown } from "@/components/Markdown"
 import { AttachmentPanel } from "@/steps/AttachmentPanel"
 import { cn, formatDateTime } from "@/lib/utils"
+import { useJobs } from "@/components/Jobs"
 
 function getRenderableNodes(nodes: OutlineNode[]): OutlineNode[] {
   const parentIds = new Set(nodes.map((n) => n.parent_id).filter(Boolean) as string[])
@@ -35,13 +36,42 @@ function getRenderableNodes(nodes: OutlineNode[]): OutlineNode[] {
 
 export function ChapterStep({ project, onNext }: { project: ProjectResponse; onNext: () => void }) {
   const outline = useAsyncData<OutlineNode[]>(() => listOutlineNodes(project.project_id), [project.project_id])
+  const tasks = useAsyncData<ChapterTaskSummary[]>(() => listChapterTasks(project.project_id), [project.project_id])
   const [activeNode, setActiveNode] = useState<OutlineNode | null>(null)
+  const [filter, setFilter] = useState<"all" | "pending" | "generated" | "attention">("all")
   const nodes = useMemo(() => getRenderableNodes(outline.data ?? []), [outline.data])
+  const taskByNode = useMemo(() => new Map((tasks.data ?? []).map((task) => [task.node_id, task])), [tasks.data])
+  const filteredNodes = useMemo(() => nodes.filter((node) => {
+    const status = taskByNode.get(node.node_id)?.status ?? "pending"
+    if (filter === "pending") return status === "pending"
+    if (filter === "generated") return ["passed", "completed"].includes(status)
+    if (filter === "attention") return ["failed", "needs_repair"].includes(status)
+    return true
+  }), [filter, nodes, taskByNode])
+
+  useEffect(() => {
+    if (!activeNode && nodes.length) {
+      const first = nodes.find((node) => ["failed", "needs_repair", "pending"].includes(taskByNode.get(node.node_id)?.status ?? "pending")) ?? nodes[0]
+      setActiveNode(first)
+    }
+  }, [activeNode, nodes, taskByNode])
+
+  useEffect(() => {
+    const finished = (event: Event) => {
+      const job = (event as CustomEvent).detail
+      if (job?.project_id === project.project_id && ["chapter_generation", "child_chapter_generation", "project_generation"].includes(job?.job_type)) void tasks.reload()
+    }
+    window.addEventListener("coalplan:job-finished", finished)
+    return () => window.removeEventListener("coalplan:job-finished", finished)
+  }, [project.project_id, tasks.reload])
 
   return (
     <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
       <Card className="flex max-h-[calc(100vh-140px)] flex-col p-4 lg:sticky lg:top-20">
         <SectionTitle title="待生成章节" right={<span className="text-xs text-muted-foreground">{nodes.length}</span>} />
+        <div className="mt-3 grid grid-cols-4 gap-1 rounded-[var(--radius)] border border-border p-1">
+          {([['all','全部'],['pending','待生成'],['generated','已生成'],['attention','需处理']] as const).map(([value, label]) => <button key={value} onClick={() => setFilter(value)} className={cn("rounded-[calc(var(--radius)-2px)] px-1 py-1.5 text-[11px]", filter === value ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted")}>{label}</button>)}
+        </div>
         <div className="mt-3 flex-1 overflow-y-auto">
           {outline.loading ? (
             <LoadingBlock />
@@ -49,8 +79,9 @@ export function ChapterStep({ project, onNext }: { project: ProjectResponse; onN
             <EmptyState icon={<FileEdit className="h-6 w-6" />} title="暂无章节" description="请先在上一步生成并确认目录。" />
           ) : (
             <ul className="flex flex-col gap-1">
-              {nodes.map((node) => {
+              {filteredNodes.map((node) => {
                 const isActive = activeNode?.node_id === node.node_id
+                const task = taskByNode.get(node.node_id)
                 return (
                   <li key={node.node_id}>
                     <button
@@ -59,6 +90,7 @@ export function ChapterStep({ project, onNext }: { project: ProjectResponse; onN
                       style={{ paddingLeft: 10 + ((node.level ?? 1) - 1) * 10 }}
                     >
                       <span className="min-w-0 flex-1 truncate">{node.title || "未命名章节"}</span>
+                      {task?.status === "passed" ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-[var(--color-success)]" /> : ["failed", "needs_repair"].includes(task?.status ?? "") ? <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-[var(--color-warning)]" /> : null}
                       {node.target_word_count ? <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{node.target_word_count}</span> : null}
                       {isActive ? <ChevronRight className="h-4 w-4 shrink-0" /> : null}
                     </button>
@@ -75,7 +107,7 @@ export function ChapterStep({ project, onNext }: { project: ProjectResponse; onN
 
       <div className="min-w-0">
         {activeNode ? (
-          <ChapterWorkspace key={activeNode.node_id} project={project} node={activeNode} />
+          <ChapterWorkspace key={activeNode.node_id} project={project} node={activeNode} nodes={nodes} onSelect={setActiveNode} />
         ) : (
           <Card className="p-5">
             <EmptyState icon={<FileEdit className="h-8 w-8" />} title="选择章节开始撰写" description="左侧选择一个叶子章节，然后补充材料、生成正文、审阅版本。" />
@@ -86,8 +118,9 @@ export function ChapterStep({ project, onNext }: { project: ProjectResponse; onN
   )
 }
 
-function ChapterWorkspace({ project, node }: { project: ProjectResponse; node: OutlineNode }) {
+function ChapterWorkspace({ project, node, nodes, onSelect }: { project: ProjectResponse; node: OutlineNode; nodes: OutlineNode[]; onSelect: (node: OutlineNode) => void }) {
   const toast = useToast()
+  const { startJob, activeJob } = useJobs()
   const projectId = project.project_id
   const chapter = useAsyncData<ChapterResponse>(() => getChapter(projectId, node.node_id), [projectId, node.node_id])
   const versionsData = useAsyncData<ChapterVersion[]>(() => listVersions(projectId, node.node_id), [projectId, node.node_id])
@@ -97,15 +130,16 @@ function ChapterWorkspace({ project, node }: { project: ProjectResponse; node: O
   )
   const [generating, setGenerating] = useState(false)
   const [generatingChildren, setGeneratingChildren] = useState(false)
+  const activeIndex = nodes.findIndex((item) => item.node_id === node.node_id)
+  const currentJob = activeJob && String(activeJob.payload.node_id ?? "") === node.node_id ? activeJob : null
 
   const reloadAll = () => Promise.all([chapter.reload(), versionsData.reload()])
 
   const handleGenerate = async () => {
     setGenerating(true)
     try {
-      await generateChapter(projectId, node.node_id)
-      toast.success("章节内容已生成并保存为新版本")
-      await reloadAll()
+      await startJob("chapter_generation", { node_id: node.node_id })
+      toast.success("章节生成已开始，完成后会自动保存为新版本")
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "生成失败")
     } finally {
@@ -116,15 +150,23 @@ function ChapterWorkspace({ project, node }: { project: ProjectResponse; node: O
   const handleGenerateChildren = async () => {
     setGeneratingChildren(true)
     try {
-      const result = await generateChildChapters(projectId, node.node_id, true, true, 8)
-      toast.success(`子章节生成完成：生成 ${result.generated.length}，跳过 ${result.skipped.length}`)
-      await reloadAll()
+      await startJob("child_chapter_generation", { node_id: node.node_id, recursive: true, only_pending: true, limit: 8 })
+      toast.success("子章节生成已开始，可在任务中心查看进度")
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "子章节生成失败")
     } finally {
       setGeneratingChildren(false)
     }
   }
+
+  useEffect(() => {
+    const finished = (event: Event) => {
+      const job = (event as CustomEvent).detail
+      if (job?.project_id === projectId && String(job?.payload?.node_id ?? "") === node.node_id) void Promise.all([reloadAll(), preflight.reload()])
+    }
+    window.addEventListener("coalplan:job-finished", finished)
+    return () => window.removeEventListener("coalplan:job-finished", finished)
+  }, [node.node_id, preflight.reload, projectId])
 
   return (
     <div className="flex flex-col gap-5">
@@ -140,20 +182,20 @@ function ChapterWorkspace({ project, node }: { project: ProjectResponse; node: O
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
+            <Button size="icon" variant="ghost" disabled={activeIndex <= 0} onClick={() => onSelect(nodes[activeIndex - 1])} aria-label="上一章节"><ArrowLeft className="h-4 w-4" /></Button>
+            <Button size="icon" variant="ghost" disabled={activeIndex < 0 || activeIndex >= nodes.length - 1} onClick={() => onSelect(nodes[activeIndex + 1])} aria-label="下一章节"><ArrowRight className="h-4 w-4" /></Button>
             <Button variant="outline" onClick={handleGenerateChildren} loading={generatingChildren} icon={<GitBranch className="h-4 w-4" />}>
               生成子章节
             </Button>
-            <Button onClick={handleGenerate} loading={generating} icon={<Wand2 className="h-4 w-4" />}>
+            <Button onClick={handleGenerate} loading={generating || Boolean(currentJob)} disabled={Boolean(activeJob && !currentJob)} icon={<Wand2 className="h-4 w-4" />}>
               {chapter.data?.markdown?.trim() ? "重新生成本章" : "生成本章"}
             </Button>
           </div>
         </div>
-        {generating ? (
+        {currentJob ? (
           <div className="mt-4 flex items-start gap-2 border-t border-border pt-3 text-xs leading-relaxed text-muted-foreground">
             <BrainCircuit className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-            <p>
-              正在依次完成来源细化、原子匹配、分段生成和事实边界检查。真实模型通常需要 2–4 分钟，完成前请停留在本页，系统会自动保存新版本。
-            </p>
+            <div className="flex-1"><p className="font-medium text-foreground">{currentJob.message}</p><p className="mt-1">任务可在后台继续运行，您可以切换章节或页面；完成后系统会自动刷新版本。</p>{currentJob.total > 0 ? <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary transition-[width]" style={{ width: `${Math.min(100, currentJob.current / currentJob.total * 100)}%` }} /></div> : null}</div>
           </div>
         ) : null}
       </Card>
@@ -161,9 +203,6 @@ function ChapterWorkspace({ project, node }: { project: ProjectResponse; node: O
       <div className="grid gap-5 xl:grid-cols-[1fr_340px]">
         <div className="flex min-w-0 flex-col gap-5">
           <GenerationBasisPanel preflight={preflight.data} loading={preflight.loading} />
-          {chapter.data?.version && chapter.data.generation_metadata && Object.keys(chapter.data.generation_metadata).length
-            ? <GenerationReceipt chapter={chapter.data} />
-            : null}
           <SourcePanel projectId={projectId} chapter={chapter.data} loading={chapter.loading} />
           {chapter.loading ? (
             <Card className="p-5">
@@ -217,7 +256,7 @@ function GenerationBasisPanel({ preflight, loading }: { preflight: ChapterGenera
           title="投标文档"
           role="决定本项目能写哪些事实"
           count={preflight.source_candidates.length}
-          lines={preflight.source_candidates.slice(0, 3).map((item) => item.title_path.join(" / "))}
+          lines={preflight.source_candidates.map((item) => item.title_path.join(" / "))}
           empty="尚无候选来源"
         />
         <BasisColumn
@@ -225,7 +264,7 @@ function GenerationBasisPanel({ preflight, loading }: { preflight: ChapterGenera
           title="优质原子"
           role="补充工序与控制闭环，不迁移参数"
           count={preflight.reference_atom_candidates.length}
-          lines={preflight.reference_atom_candidates.slice(0, 3).map((item) => `${item.process || item.title_path[item.title_path.length - 1] || "未标注工艺"} · ${item.project_name}`)}
+          lines={preflight.reference_atom_candidates.map((item) => `${item.process || item.title_path[item.title_path.length - 1] || "未标注工艺"} · ${item.project_name}`)}
           empty="本章不强行使用原子"
         />
         <BasisColumn
@@ -233,7 +272,7 @@ function GenerationBasisPanel({ preflight, loading }: { preflight: ChapterGenera
           title="写作技巧"
           role="控制结构与表达，不提供事实"
           count={preflight.writing_skill.matched_skill_keys.length || 1}
-          lines={preflight.writing_skill.structure.slice(0, 3)}
+          lines={preflight.writing_skill.structure}
           empty="使用通用章节组织规则"
         />
       </div>
@@ -277,9 +316,7 @@ function BasisColumn({
     <div className="min-w-0 px-5 py-4">
       <p className="flex items-center gap-2 text-xs font-semibold text-foreground">{icon}{title}<span className="text-muted-foreground">{count}</span></p>
       <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{role}</p>
-      <ul className="mt-2 space-y-1">
-        {lines.length ? lines.map((line) => <li key={line} className="truncate text-[11px] text-foreground/80">{line}</li>) : <li className="text-[11px] text-muted-foreground">{empty}</li>}
-      </ul>
+      {lines.length ? <details className="mt-2"><summary className="cursor-pointer text-[11px] font-medium text-primary">查看 {lines.length} 项匹配依据</summary><ul className="mt-2 max-h-36 space-y-1 overflow-y-auto">{lines.map((line, index) => <li key={`${index}-${line}`} className="text-[11px] leading-relaxed text-foreground/80">{line}</li>)}</ul></details> : <p className="mt-2 text-[11px] text-muted-foreground">{empty}</p>}
     </div>
   )
 }
@@ -390,8 +427,8 @@ function ChapterEditor({
   onChanged: () => void
 }) {
   const toast = useToast()
-  const [mode, setMode] = useState<"preview" | "edit">("preview")
-  const [draft, setDraft] = useState(chapter?.markdown ?? "")
+  const [mode, setMode] = useState<"preview" | "evidence" | "edit">("preview")
+  const [draft, setDraft] = useState(cleanChapterMarkdown(chapter?.markdown ?? ""))
   const [saving, setSaving] = useState(false)
 
   const saveManual = async () => {
@@ -426,12 +463,13 @@ function ChapterEditor({
         <SectionTitle title="章节正文" />
         <div className="flex items-center gap-1 rounded-[var(--radius)] border border-border p-0.5">
           <TabBtn active={mode === "preview"} onClick={() => setMode("preview")}>
-            预览
+            正文
           </TabBtn>
+          <TabBtn active={mode === "evidence"} onClick={() => setMode("evidence")}>生成凭据</TabBtn>
           <TabBtn
             active={mode === "edit"}
             onClick={() => {
-              setDraft(chapter.markdown)
+              setDraft(cleanChapterMarkdown(chapter.markdown))
               setMode("edit")
             }}
           >
@@ -442,8 +480,10 @@ function ChapterEditor({
       <div className="mt-4">
         {mode === "preview" ? (
           <div className="max-h-[62vh] overflow-y-auto rounded-[var(--radius)] border border-border bg-background/40 p-5">
-            <Markdown content={chapter.markdown} />
+            <Markdown content={cleanChapterMarkdown(chapter.markdown)} />
           </div>
+        ) : mode === "evidence" ? (
+          <div className="rounded-[var(--radius)] border border-border bg-muted/20 p-4"><GenerationReceipt chapter={chapter} /></div>
         ) : (
           <div className="flex flex-col gap-3">
             <TextArea value={draft} onChange={(e) => setDraft(e.target.value)} className="min-h-[52vh] font-mono text-[13px] leading-relaxed" />
@@ -468,6 +508,25 @@ function TabBtn({ active, onClick, children }: { active: boolean; onClick: () =>
       {children}
     </button>
   )
+}
+
+function cleanChapterMarkdown(markdown: string): string {
+  const lines = markdown.split(/\r?\n/)
+  const output: string[] = []
+  let skippingLevel = 0
+  for (const line of lines) {
+    const heading = /^(#{1,6})\s+(.+)$/.exec(line.trim())
+    if (heading && heading[2].includes("主要来源摘要")) {
+      skippingLevel = heading[1].length
+      continue
+    }
+    if (skippingLevel) {
+      if (!heading || heading[1].length > skippingLevel) continue
+      skippingLevel = 0
+    }
+    output.push(line)
+  }
+  return output.join("\n").trim()
 }
 
 function VersionPanel({

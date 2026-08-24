@@ -1,5 +1,5 @@
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from "react"
-import { Loader2 } from "lucide-react"
+import { AlertTriangle, Loader2, X } from "lucide-react"
 import { cn, statusLabel, statusTone, type StatusTone } from "@/lib/utils"
 
 type ButtonVariant = "primary" | "secondary" | "ghost" | "outline" | "danger" | "accent"
@@ -166,6 +166,46 @@ export function SectionTitle({
         {description ? <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{description}</p> : null}
       </div>
       {right ? <div className="shrink-0">{right}</div> : null}
+    </div>
+  )
+}
+
+export function ConfirmDialog({
+  open,
+  title,
+  description,
+  confirmLabel = "确认",
+  danger = false,
+  loading = false,
+  onConfirm,
+  onClose,
+}: {
+  open: boolean
+  title: string
+  description: string
+  confirmLabel?: string
+  danger?: boolean
+  loading?: boolean
+  onConfirm: () => void
+  onClose: () => void
+}) {
+  if (!open) return null
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/35 p-4" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="w-full max-w-md rounded-[var(--radius)] border border-border bg-card p-5 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+        <div className="flex items-start gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--radius)] bg-[color-mix(in_srgb,var(--color-warning)_14%,transparent)] text-[var(--color-warning)]"><AlertTriangle className="h-5 w-5" /></span>
+          <div className="min-w-0 flex-1">
+            <h2 id="confirm-title" className="text-base font-semibold text-foreground">{title}</h2>
+            <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{description}</p>
+          </div>
+          <Button size="icon" variant="ghost" onClick={onClose} aria-label="关闭确认框"><X className="h-4 w-4" /></Button>
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="outline" onClick={onClose}>取消</Button>
+          <Button variant={danger ? "danger" : "primary"} loading={loading} onClick={onConfirm}>{confirmLabel}</Button>
+        </div>
+      </div>
     </div>
   )
 }

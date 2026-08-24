@@ -59,7 +59,146 @@ class FakeLLMClient:
             return _fake_outline(prompt)
         if schema_name == "SourceMappingResult":
             return _fake_mapping(prompt)
+        if schema_name == "standard_constraint_atomization":
+            return _fake_standard_constraints(prompt)
+        if schema_name == "standard_document_classification":
+            return _fake_standard_document_classification(prompt)
+        if schema_name == "standard_document_matching":
+            return _fake_standard_document_matching(prompt)
+        if schema_name == "standard_constraint_matching":
+            return _fake_standard_constraint_matching(prompt)
+        if schema_name == "standard_compliance_review":
+            return _fake_standard_compliance_review(prompt)
         return {}
+
+
+def _fake_standard_constraints(prompt: str) -> dict[str, Any]:
+    pattern = re.compile(
+        r"\[block_id=(?P<id>[^;]+); clause=(?P<clause>[^;]+);[^\]]*\]\n(?P<text>.*?)(?=\n\n\[block_id=|\Z)",
+        re.S,
+    )
+    atoms = []
+    for match in pattern.finditer(prompt):
+        text = match.group("text").strip()
+        if not re.search(r"必须|应当|应|不得|严禁|不应|允许偏差|合格率", text):
+            continue
+        constraint_type = "禁止性要求" if re.search(r"不得|严禁|不应", text) else "一般技术要求"
+        ai_fixable = constraint_type != "禁止性要求" and not re.search(r"审批|资质|检测|试验|实测", text)
+        keywords = [term for term in ("爆破", "开挖", "混凝土", "灌浆", "模板", "安全", "验收") if term in text]
+        atoms.append({
+            "block_id": match.group("id"),
+            "clause_no": "" if match.group("clause") == "-" else match.group("clause"),
+            "source_text": text,
+            "normalized_requirement": text,
+            "constraint_type": constraint_type,
+            "review_method": "semantic_review",
+            "severity": "blocking" if constraint_type == "禁止性要求" else "warning",
+            "disciplines": keywords[:2],
+            "project_types": ["水利水电"],
+            "chapter_scopes": keywords,
+            "keywords": keywords,
+            "applicability": [],
+            "exceptions": [],
+            "evidence_required": [],
+            "ai_fixable": ai_fixable,
+            "repair_instruction": "删除冲突表述并补充符合条款的控制措施。",
+            "confidence": 0.9,
+            "status": "published",
+        })
+    return {"atoms": atoms[:16]}
+
+
+def _fake_standard_document_classification(prompt: str) -> dict[str, Any]:
+    pattern = re.compile(r"\[source_id=(?P<id>[^;]+); file_name=(?P<name>[^\]]+)\]\n(?P<text>.*?)(?=\n\n\[source_id=|\Z)", re.S)
+    documents = []
+    for match in pattern.finditer(prompt):
+        text = f"{match.group('name')}\n{match.group('text')[:1800]}"
+        if "施工组织" in text:
+            category = "施工组织"
+        elif "安全" in text:
+            category = "安全"
+        elif "验收" in text or "质量检验" in text:
+            category = "质量验收"
+        elif "施工" in text:
+            category = "施工技术"
+        else:
+            category = "其他"
+        disciplines = [term for term in ("地下工程", "爆破", "混凝土", "灌浆", "土石方", "施工导流") if any(char_pair in text for char_pair in _bigrams(term))]
+        documents.append({
+            "source_id": match.group("id"), "category": category, "disciplines": disciplines[:4],
+            "project_types": ["水利水电"] if any(term in text for term in ("水利", "水电", "水工")) else [],
+            "summary": match.group("name"), "confidence": 0.9,
+        })
+    return {"documents": documents}
+
+
+def _fake_standard_document_matching(prompt: str) -> dict[str, Any]:
+    project_match = re.search(r"项目上下文：\n(?P<text>.*?)(?=\n\n候选规范：)", prompt, re.S)
+    project = project_match.group("text") if project_match else ""
+    matches = []
+    for line in prompt.split("候选规范：", 1)[-1].splitlines():
+        match = re.match(r"- document_id=(?P<id>[^;]+);(?P<meta>.*)", line)
+        if not match:
+            continue
+        overlap = _semantic_overlap(project, match.group("meta"))
+        matches.append({
+            "document_id": match.group("id"), "applicable": overlap >= 0.08,
+            "score": round(min(0.98, 0.35 + overlap), 3) if overlap >= 0.08 else round(overlap, 3),
+            "match_reason": "项目内容与规范范围存在语义重合" if overlap >= 0.08 else "当前项目信息不足以确认适用",
+        })
+    return {"matches": matches}
+
+
+def _fake_standard_constraint_matching(prompt: str) -> dict[str, Any]:
+    chapter_match = re.search(r"章节标题：(?P<title>.*?)\n章节正文：\n(?P<body>.*?)(?=\n\n候选约束：)", prompt, re.S)
+    chapter = f"{chapter_match.group('title')}\n{chapter_match.group('body')}" if chapter_match else ""
+    pattern = re.compile(r"\[atom_id=(?P<id>[^;]+);[^\]]+\]\n要求：(?P<requirement>.*?)(?=\n适用条件：)", re.S)
+    matches = []
+    for item in pattern.finditer(prompt):
+        overlap = _semantic_overlap(chapter, item.group("requirement"))
+        if overlap >= 0.08:
+            matches.append({"atom_id": item.group("id"), "applicable": True, "score": min(0.98, 0.45 + overlap), "match_reason": "章节施工内容与条款要求语义相关"})
+    return {"matches": matches[:18]}
+
+
+def _fake_standard_compliance_review(prompt: str) -> dict[str, Any]:
+    chapter_match = re.search(r"正文：\n(?P<body>.*?)(?=\n\n候选条款：)", prompt, re.S)
+    chapter = chapter_match.group("body") if chapter_match else ""
+    atom_pattern = re.compile(
+        r"\[atom_id=(?P<id>[^;]+);[^\]]*ai_fixable=(?P<fix>true|false)\]\n原文：(?P<text>.*?)(?=\n审查要求：)",
+        re.S,
+    )
+    violations = []
+    for match in atom_pattern.finditer(prompt):
+        source = match.group("text").strip()
+        prohibited = re.search(r"(?:严禁|不得|不应)(?:采用|使用|进行)?([^，。；\n]{2,18})", source)
+        if not prohibited:
+            continue
+        token = prohibited.group(1).strip()
+        if token not in chapter and not any(part in chapter for part in re.findall(r"[\u4e00-\u9fff]{2,}", token)):
+            continue
+        violations.append({
+            "atom_id": match.group("id"),
+            "verdict": "violated",
+            "explanation": f"章节表述涉及规范禁止的“{token}”。",
+            "evidence_quote": token,
+            "suggested_fix": "删除冲突做法，并改写为符合规范的施工控制措施。",
+            "ai_fixable": match.group("fix") == "true",
+        })
+    return {"violations": violations}
+
+
+def _bigrams(text: str) -> set[str]:
+    compact = re.sub(r"[^\w\u4e00-\u9fff]", "", text.lower())
+    return {compact[index : index + 2] for index in range(max(0, len(compact) - 1))}
+
+
+def _semantic_overlap(left: str, right: str) -> float:
+    left_terms = _bigrams(left)
+    right_terms = _bigrams(right)
+    if not left_terms or not right_terms:
+        return 0.0
+    return len(left_terms & right_terms) / max(1, min(len(left_terms), len(right_terms)))
 
 
 def _extract(prompt: str, label: str) -> str:

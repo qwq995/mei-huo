@@ -1,6 +1,6 @@
-import { useCallback, useState } from "react"
-import { Check, CheckCircle2, ChevronRight, CircleDot, FileEdit, FolderKanban, ListTree, PanelsTopLeft, Upload } from "lucide-react"
-import { getProjectExperienceSummary, type ProjectExperienceSummary, type ProjectResponse } from "@/lib/api"
+import { useCallback, useEffect, useState } from "react"
+import { AlertTriangle, Check, CheckCircle2, ChevronRight, CircleDot, FileEdit, FolderKanban, ListTree, PanelsTopLeft, Upload } from "lucide-react"
+import { getProject, getProjectExperienceSummary, type ProjectExperienceSummary, type ProjectResponse } from "@/lib/api"
 import { ToastProvider } from "@/components/Toast"
 import { cn } from "@/lib/utils"
 import { useAsyncData } from "@/lib/useAsync"
@@ -9,6 +9,7 @@ import { UploadStep } from "@/steps/UploadStep"
 import { OutlineStep } from "@/steps/OutlineStep"
 import { ChapterStep } from "@/steps/ChapterStep"
 import { ExportStep } from "@/steps/ExportStep"
+import { JobsProvider, TaskCenter } from "@/components/Jobs"
 
 export type StepId = "project" | "upload" | "outline" | "chapter" | "export"
 
@@ -30,7 +31,7 @@ export default function App() {
 
 function Studio() {
   const [project, setProject] = useState<ProjectResponse | null>(null)
-  const [active, setActive] = useState<StepId>("project")
+  const [active, setActive] = useState<StepId>(() => stepFromUrl())
   const [experienceRevision, setExperienceRevision] = useState(0)
   const activeIndex = STEPS.findIndex((s) => s.id === active)
   const refreshExperience = useCallback(() => setExperienceRevision((value) => value + 1), [])
@@ -39,16 +40,38 @@ function Studio() {
     (id: StepId) => {
       if (id !== "project" && !project) return
       setActive(id)
+      updateLocation(project?.project_id ?? null, id)
     },
     [project],
   )
 
   const selectProject = useCallback((p: ProjectResponse | null) => {
     setProject(p)
-    if (p) setActive("upload")
+    const nextStep: StepId = p ? "upload" : "project"
+    setActive(nextStep)
+    updateLocation(p?.project_id ?? null, nextStep)
+  }, [])
+
+  useEffect(() => {
+    const restore = async () => {
+      const params = new URLSearchParams(window.location.search)
+      const projectId = params.get("project")
+      if (!projectId) return
+      try {
+        setProject(await getProject(projectId))
+        setActive(stepFromUrl())
+      } catch {
+        updateLocation(null, "project", true)
+      }
+    }
+    void restore()
+    const onPopState = () => void restore()
+    window.addEventListener("popstate", onPopState)
+    return () => window.removeEventListener("popstate", onPopState)
   }, [])
 
   return (
+    <JobsProvider projectId={project?.project_id ?? null}>
     <div className="flex min-h-screen flex-col">
       <header className="sticky top-0 z-30 border-b border-border bg-background/90 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-[1480px] items-center justify-between gap-4 px-5">
@@ -61,12 +84,15 @@ function Studio() {
               <p className="text-xs text-muted-foreground">从投标文档到目录、章节版本和最终 Markdown</p>
             </div>
           </div>
+          <div className="flex items-center gap-2">
           {project ? (
-            <div className="hidden items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 sm:flex">
+            <div className="hidden items-center gap-2 rounded-[var(--radius)] border border-border bg-card px-3 py-1.5 md:flex">
               <span className="h-2 w-2 rounded-full bg-accent" />
               <span className="max-w-[260px] truncate text-xs font-medium text-foreground">{project.name}</span>
             </div>
           ) : null}
+          {project ? <TaskCenter /> : null}
+          </div>
         </div>
       </header>
 
@@ -132,6 +158,7 @@ function Studio() {
         </main>
       </div>
     </div>
+    </JobsProvider>
   )
 }
 
@@ -144,6 +171,7 @@ function ProjectPulse({ project, onNavigate }: { project: ProjectResponse; onNav
   const data = summary.data
   const progress = data.progress
   const action = data.actions[0]
+  const needsAttention = progress.needs_attention_chapters ?? 0
   return (
     <section className="mb-5 border-y border-border bg-muted/30 px-4 py-3" aria-label="项目当前进度">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -152,9 +180,13 @@ function ProjectPulse({ project, onNavigate }: { project: ProjectResponse; onNav
             <CircleDot className="h-4 w-4 text-accent" />
             {data.headline}
           </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            已索引 {progress.indexed_sections ?? 0} 节 · 目录 {progress.outline_nodes ?? 0} 节点 · 已生成 {progress.generated_chapters ?? 0}/{progress.leaf_chapters ?? 0} 章 · {data.reference_library.message}
-          </p>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            <span>资料 {progress.source_documents ?? 0} 份 / 索引 {progress.indexed_sections ?? 0} 节</span>
+            <span>目录 {progress.outline_nodes ?? 0} 节点</span>
+            <span>章节 {progress.generated_chapters ?? 0}/{progress.leaf_chapters ?? 0}</span>
+            <span>原子 {data.reference_library.published_atoms ?? 0} 条</span>
+            {needsAttention ? <span className="inline-flex items-center gap-1 text-[var(--color-warning)]"><AlertTriangle className="h-3 w-3" />待处理 {needsAttention}</span> : null}
+          </div>
         </div>
         {action?.target_step ? (
           <button
@@ -167,4 +199,17 @@ function ProjectPulse({ project, onNavigate }: { project: ProjectResponse; onNav
       </div>
     </section>
   )
+}
+
+function stepFromUrl(): StepId {
+  const step = new URLSearchParams(window.location.search).get("step") as StepId | null
+  return STEPS.some((item) => item.id === step) ? step! : "project"
+}
+
+function updateLocation(projectId: string | null, step: StepId, replace = false) {
+  const url = new URL(window.location.href)
+  if (projectId) url.searchParams.set("project", projectId)
+  else url.searchParams.delete("project")
+  url.searchParams.set("step", step)
+  window.history[replace ? "replaceState" : "pushState"]({}, "", url)
 }

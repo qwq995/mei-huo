@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from coalplan.application.reference_atom_retrieval import retrieve_reference_atoms
 from coalplan.application.reference_atomization import atomize_reference_markdown
+from coalplan.application.reference_import_service import process_reference_markdown
 from coalplan.application.serialization import dump_model
 from coalplan.domain.documents import stable_id
 from coalplan.domain.reference_library import (
@@ -147,56 +148,14 @@ def import_reference_document(payload: ReferenceImportRequest, request: Request)
 
 @router.post("/upload-markdown")
 def upload_reference_markdown(payload: ReferenceMarkdownUploadRequest, request: Request):
-    raw = payload.content.encode("utf-8")
-    digest = hashlib.sha256(raw).hexdigest()
-    document_id = stable_id("refdoc", digest)
-    source_path = request.app.state.pipeline.artifacts.write_text(
-        "reference-library",
-        f"sources/{document_id}/{Path(payload.file_name).name}",
-        payload.content,
-    )
-    document = ReferenceDocument(
-        id=document_id,
-        content_hash=digest,
-        source_path=source_path,
-        file_name=Path(payload.file_name).name,
-        project_name=payload.project_name,
-        project_type=payload.project_type,
-        document_kind=payload.document_kind,
-    )
-    library = request.app.state.reference_library
-    library.save_document(document)
     try:
-        result = atomize_reference_markdown(
-            document=document,
-            markdown=payload.content,
-            llm=request.app.state.pipeline._structured_llm(),
-            focus_terms=payload.focus_terms,
-            max_batches=payload.max_batches,
-            publish_for_validation=False,
+        return process_reference_markdown(
+            pipeline=request.app.state.pipeline,
+            library=request.app.state.reference_library,
+            payload=payload.model_dump(mode="json"),
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI atomization failed: {exc}") from exc
-    library.replace_document_content(document.id, chapters=_chapters(document.id, result.blocks), atoms=result.atoms)
-    processing_status = "success" if not result.failed_batch_count else ("partial" if result.atoms else "failed")
-    if processing_status == "success":
-        user_message = f"已生成 {len(result.atoms)} 条候选原子，可开始抽查。"
-    elif processing_status == "partial":
-        user_message = f"部分批次未完成，已保留 {len(result.atoms)} 条成功候选，可先抽查或稍后重新上传。"
-    else:
-        user_message = "文档已保存，但本次 AI 切分未产出候选。可以重新上传，其他项目资料不受影响。"
-    return {
-        "document": dump_model(document),
-        "block_count": len(result.blocks),
-        "atom_count": len(result.atoms),
-        "llm_call_count": result.llm_call_count,
-        "failed_batch_count": result.failed_batch_count,
-        "warnings": result.warnings or [],
-        "processing_status": processing_status,
-        "user_message": user_message,
-        "candidate_count": sum(item.status == ReferenceReviewStatus.ai_candidate for item in result.atoms),
-        "next_step": "抽查候选原子的标题、工艺标签和正文后，发布可复用内容。",
-    }
 
 
 @router.patch("/atoms/{atom_id}/status")

@@ -7,9 +7,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from coalplan.application.run_generation_pipeline import GenerationPipeline
+from coalplan.application.generation_jobs import GenerationJobManager
 from coalplan.application.workspace_store import WorkspaceStore
 from coalplan.infrastructure.database.repository import DatabaseProjectRepository
 from coalplan.infrastructure.database.reference_repository import ReferenceLibraryRepository
+from coalplan.infrastructure.database.standard_repository import StandardConstraintRepository
 from coalplan.infrastructure.database.session import create_session_factory, init_database, sqlite_url_for_storage
 from coalplan.infrastructure.llm.fake_llm import FakeLLMClient
 from coalplan.infrastructure.llm.openai_compatible import OpenAICompatibleLLMClient
@@ -25,6 +27,8 @@ from coalplan.interfaces.api.routes_projects import router as projects_router
 from coalplan.interfaces.api.routes_reference_library import router as reference_library_router
 from coalplan.interfaces.api.routes_templates import router as templates_router
 from coalplan.interfaces.api.routes_workspace import router as workspace_router
+from coalplan.interfaces.api.routes_jobs import router as jobs_router
+from coalplan.interfaces.api.routes_standard_constraints import router as standard_constraints_router
 from coalplan.settings import Settings, get_settings
 
 
@@ -41,6 +45,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.pipeline = build_pipeline(settings)
     app.state.workspace_store = app.state.pipeline.workspace_store
     app.state.reference_library = app.state.pipeline.reference_library
+    app.state.standard_constraints = StandardConstraintRepository(app.state.workspace_store.session_factory)
+    app.state.job_manager = GenerationJobManager(
+        app.state.workspace_store.session_factory,
+        app.state.pipeline,
+        standard_constraints=app.state.standard_constraints,
+    )
     app.include_router(projects_router)
     app.include_router(templates_router)
     app.include_router(generation_router)
@@ -48,6 +58,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(workspace_router)
     app.include_router(pattern_library_router)
     app.include_router(reference_library_router)
+    app.include_router(jobs_router)
+    app.include_router(standard_constraints_router)
     return app
 
 

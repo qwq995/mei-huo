@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Callable
 from uuid import uuid4
 
 from coalplan.application.content_revision_plan import build_content_revision_plan, render_content_revision_plan_markdown
@@ -1446,7 +1447,12 @@ class GenerationPipeline:
         self.projects.save(project)
         return run
 
-    def generate_all(self, project_id: str) -> GenerationRun:
+    def generate_all(
+        self,
+        project_id: str,
+        *,
+        progress_callback: Callable[[str, int, int, str], None] | None = None,
+    ) -> GenerationRun:
         project = self.projects.get(project_id)
         run = project.runs[-1] if project.runs else self.prepare_run(project_id)
         project = self.projects.get(project_id)
@@ -1461,7 +1467,10 @@ class GenerationPipeline:
         policy_by_node = {policy.node_id: policy for policy in control_plan.chapter_policies}
         run.status = RunStatus.running
         drafts: list[ChapterDraft] = []
-        for task in run.chapter_tasks:
+        total_tasks = len(run.chapter_tasks)
+        for task_index, task in enumerate(run.chapter_tasks, start=1):
+            if progress_callback:
+                progress_callback("writing", task_index - 1, total_tasks, f"正在生成章节：{task.title}")
             try:
                 node = nodes_by_id[task.node_id]
                 task.target_word_count = node.target_word_count
@@ -1542,13 +1551,22 @@ class GenerationPipeline:
                 task.status = TaskStatus.failed
                 task.error_message = str(exc)
             run.logs.append(f"{task.status.value}: {task.title}")
+            if progress_callback:
+                progress_callback("writing", task_index, total_tasks, f"已处理章节：{task.title}")
         self._drafts[run.id] = drafts
         run.status = RunStatus.completed if all(task.status.value == "passed" for task in run.chapter_tasks) else RunStatus.partial_failed
         self._persist_validation(project.id, run, drafts=drafts, template_tree=project.template_tree, control_plan=control_plan)
         self.projects.save(project)
         return run
 
-    def generate_one(self, project_id: str, node_id: str, *, revision_context: str = "") -> ChapterDraft:
+    def generate_one(
+        self,
+        project_id: str,
+        node_id: str,
+        *,
+        revision_context: str = "",
+        progress_callback: Callable[[str, int, int, str], None] | None = None,
+    ) -> ChapterDraft:
         project = self.projects.get(project_id)
         run = project.runs[-1] if project.runs else self.prepare_run(project_id)
         project = self.projects.get(project_id)
@@ -1570,6 +1588,8 @@ class GenerationPipeline:
         control_plan = self._generation_control_plan(project)
         policy_by_node = {policy.node_id: policy for policy in control_plan.chapter_policies}
         policy = policy_by_node.get(node.id)
+        if progress_callback:
+            progress_callback("source_mapping", 0, 1, "正在匹配投标来源和项目事实")
         mapping, selected_sections, source_matches = map_chapter_sources(
             project_id=project.id,
             profile=project.project_profile,
@@ -1605,6 +1625,8 @@ class GenerationPipeline:
             self._persist_validation(project.id, run, drafts=self._drafts.get(run.id, []), template_tree=project.template_tree, control_plan=control_plan)
             self.projects.save(project)
             return draft
+        if progress_callback:
+            progress_callback("atom_retrieval", 0, 1, "已完成来源映射，正在匹配优质原子")
         writing_unit_contexts = self._build_writing_unit_contexts(
             project=project,
             node=node,
@@ -1612,6 +1634,10 @@ class GenerationPipeline:
             selected_sections=selected_sections,
             policy=policy,
         )
+        checkpoint_units = self._load_writing_unit_checkpoint(project.id, node.id)
+        def save_checkpoint(unit_id: str, markdown: str) -> None:
+            checkpoint_units[unit_id] = markdown
+            self.artifacts.write_text(project.id, f"control/job-checkpoints/{node.id}.json", to_json_text(checkpoint_units))
         reference_atoms = (
             flatten_reference_atom_results(writing_unit_contexts)
             if writing_unit_contexts
@@ -1643,7 +1669,12 @@ class GenerationPipeline:
                 project.generation_context,
                 current_node_id=node.id,
             ),
+            progress_callback=progress_callback,
+            completed_writing_units=checkpoint_units,
+            unit_checkpoint_callback=save_checkpoint,
         )
+        if progress_callback:
+            progress_callback("validation", len(writing_unit_contexts), len(writing_unit_contexts), "正在校验事实边界并保存版本")
         self._update_project_generation_context(
             project,
             node,
@@ -1657,6 +1688,7 @@ class GenerationPipeline:
         control_plan = self._generation_control_plan(project)
         self._persist_validation(project.id, run, drafts=self._drafts.get(run.id, []), template_tree=project.template_tree, control_plan=control_plan)
         self.projects.save(project)
+        self.artifacts.write_text(project.id, f"control/job-checkpoints/{node.id}.json", "{}")
         return draft
 
     def preview_chapter_writing_units(self, project_id: str, node_id: str) -> dict:
@@ -2658,6 +2690,19 @@ class GenerationPipeline:
             return self.workspace_store.render_chapter_context(project_id, node_id)
         except Exception:
             return ""
+
+    def _load_writing_unit_checkpoint(self, project_id: str, node_id: str) -> dict[str, str]:
+        root = getattr(self.artifacts, "root", None)
+        if root is None:
+            return {}
+        path = Path(root) / project_id / "control" / "job-checkpoints" / f"{node_id}.json"
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+            return {str(key): str(value) for key, value in payload.items()} if isinstance(payload, dict) else {}
+        except (OSError, ValueError, TypeError):
+            return {}
 
     def _build_writing_unit_contexts(
         self,

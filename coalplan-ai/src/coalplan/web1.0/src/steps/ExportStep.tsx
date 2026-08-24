@@ -1,13 +1,17 @@
-import { useState } from "react"
-import { Code2, Download, Eye, FileDown, GitMerge, RefreshCw, ShieldCheck } from "lucide-react"
-import { generateProject, getFinalMarkdown, mergeProject, runQualityAudit, type ProjectResponse, type QualityAuditResponse, type RunResponse } from "@/lib/api"
+import { useEffect, useMemo, useState } from "react"
+import { AlertTriangle, CheckCircle2, Code2, Download, Eye, FileDown, GitMerge, RefreshCw, ShieldCheck } from "lucide-react"
+import { getFinalMarkdown, listChapterTasks, mergeProject, type ProjectResponse, type QualityAuditResponse, type RunResponse } from "@/lib/api"
 import { useToast } from "@/components/Toast"
 import { Button, Card, EmptyState, SectionTitle, StatusBadge } from "@/components/ui"
 import { Markdown } from "@/components/Markdown"
 import { cn, downloadTextFile, safeFileName } from "@/lib/utils"
+import { useJobs } from "@/components/Jobs"
+import { useAsyncData } from "@/lib/useAsync"
 
 export function ExportStep({ project }: { project: ProjectResponse }) {
   const toast = useToast()
+  const { startJob, activeJob } = useJobs()
+  const tasks = useAsyncData(() => listChapterTasks(project.project_id), [project.project_id])
   const [markdown, setMarkdown] = useState("")
   const [loadingDoc, setLoadingDoc] = useState(false)
   const [merging, setMerging] = useState(false)
@@ -16,12 +20,15 @@ export function ExportStep({ project }: { project: ProjectResponse }) {
   const [audit, setAudit] = useState<QualityAuditResponse | null>(null)
   const [view, setView] = useState<"preview" | "source">("preview")
   const [lastRun, setLastRun] = useState<RunResponse | null>(null)
+  const [loadedAt, setLoadedAt] = useState<string | null>(null)
+  const remaining = useMemo(() => (tasks.data ?? []).filter((task) => task.status !== "passed").length, [tasks.data])
 
   const loadFinal = async () => {
     setLoadingDoc(true)
     try {
       const text = await getFinalMarkdown(project.project_id)
       setMarkdown(text)
+      setLoadedAt(new Date().toISOString())
       toast.success("已载入最终文档")
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "尚未生成最终文档，请先合并")
@@ -33,13 +40,8 @@ export function ExportStep({ project }: { project: ProjectResponse }) {
   const handleGenerateAll = async () => {
     setGeneratingAll(true)
     try {
-      const run = await generateProject(project.project_id)
-      setLastRun(run)
-      if (run.status === "completed") {
-        toast.success(`全量生成完成：通过 ${run.passed_count} / ${run.task_count}`)
-      } else {
-        toast.info(`生成已结束，但仍需人工处理：通过 ${run.passed_count} / ${run.task_count}`)
-      }
+      await startJob("project_generation")
+      toast.success("全量生成已开始，可在任务中心查看章节级进度")
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "生成失败")
     } finally {
@@ -68,15 +70,28 @@ export function ExportStep({ project }: { project: ProjectResponse }) {
   const handleAudit = async () => {
     setAuditing(true)
     try {
-      const result = await runQualityAudit(project.project_id, true)
-      setAudit(result)
-      toast.success("质量审查完成")
+      await startJob("quality_audit", { apply_feedback: true })
+      toast.success("质量审查已开始，完成后会自动显示结果")
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "审查失败")
     } finally {
       setAuditing(false)
     }
   }
+
+  useEffect(() => {
+    const finished = (event: Event) => {
+      const job = (event as CustomEvent).detail
+      if (job?.project_id !== project.project_id) return
+      if (job.job_type === "project_generation") {
+        setLastRun(job.result as RunResponse)
+        void tasks.reload()
+      }
+      if (job.job_type === "quality_audit" && job.status === "completed") setAudit(job.result as QualityAuditResponse)
+    }
+    window.addEventListener("coalplan:job-finished", finished)
+    return () => window.removeEventListener("coalplan:job-finished", finished)
+  }, [project.project_id, tasks.reload])
 
   const handleDownload = () => {
     if (!markdown.trim()) {
@@ -91,7 +106,10 @@ export function ExportStep({ project }: { project: ProjectResponse }) {
     <div className="grid gap-6 lg:grid-cols-[350px_1fr]">
       <div className="flex flex-col gap-5">
         <Card className="p-5">
-          <SectionTitle title="成稿流程" description="生成、合并和质量审查都只给用户可操作结果；是否保留由用户决定。" />
+          <SectionTitle title="下一步" description={remaining ? `还有 ${remaining} 个章节未通过，建议先继续生成。` : "章节已准备完成，可以合并最新选用版本。"} />
+          <Button className="mt-4 w-full" onClick={remaining ? handleGenerateAll : handleMerge} loading={remaining ? generatingAll || activeJob?.job_type === "project_generation" : merging} icon={remaining ? <RefreshCw className="h-4 w-4" /> : <GitMerge className="h-4 w-4" />}>
+            {remaining ? `继续生成 ${remaining} 个章节` : "合并最新版本"}
+          </Button>
           <div className="mt-4 flex flex-col gap-2.5">
             <ActionRow
               index={1}
@@ -99,7 +117,7 @@ export function ExportStep({ project }: { project: ProjectResponse }) {
               desc="为尚未生成的章节批量生成正文版本"
               icon={<RefreshCw className="h-4 w-4" />}
               action={
-                <Button size="sm" variant="outline" onClick={handleGenerateAll} loading={generatingAll}>
+                <Button size="sm" variant="outline" onClick={handleGenerateAll} loading={generatingAll || activeJob?.job_type === "project_generation"}>
                   执行
                 </Button>
               }
@@ -121,7 +139,7 @@ export function ExportStep({ project }: { project: ProjectResponse }) {
               desc="给出覆盖、结构和再生成建议"
               icon={<ShieldCheck className="h-4 w-4" />}
               action={
-                <Button size="sm" variant="accent" onClick={handleAudit} loading={auditing}>
+                <Button size="sm" variant="accent" onClick={handleAudit} loading={auditing || activeJob?.job_type === "quality_audit"}>
                   审查
                 </Button>
               }
@@ -139,7 +157,7 @@ export function ExportStep({ project }: { project: ProjectResponse }) {
               下载 .md
             </Button>
           </div>
-          {markdown.trim() ? <p className="mt-3 text-xs text-muted-foreground">当前文档约 {markdown.length.toLocaleString()} 字符</p> : null}
+          {markdown.trim() ? <p className="mt-3 text-xs text-muted-foreground">当前文档约 {markdown.length.toLocaleString()} 字符 · 载入于 {loadedAt ? new Date(loadedAt).toLocaleString("zh-CN") : "本次会话"}</p> : null}
         </Card>
 
         {lastRun ? <RunCard run={lastRun} /> : null}
@@ -265,6 +283,7 @@ function RunMetric({ label, value }: { label: string; value: number }) {
 function AuditCard({ audit }: { audit: QualityAuditResponse }) {
   const report = audit.report ?? {}
   const score = typeof report.score === "number" ? report.score : typeof report.overall_score === "number" ? report.overall_score : null
+  const issues = collectAuditIssues(report)
   return (
     <Card className="p-5">
       <SectionTitle title="审查结果" right={<StatusBadge status={(report.status as string | undefined) ?? audit.revision_targets?.status} />} />
@@ -275,8 +294,21 @@ function AuditCard({ audit }: { audit: QualityAuditResponse }) {
             <span className="text-xs text-muted-foreground">综合评分</span>
           </div>
         ) : null}
-        <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-[var(--radius)] bg-muted/50 p-3 text-xs text-foreground">{JSON.stringify(report, null, 2)}</pre>
+        {issues.length ? <ul className="space-y-2">{issues.slice(0, 8).map((issue, index) => <li key={`${index}-${issue}`} className="flex items-start gap-2 rounded-[var(--radius)] border border-border p-2.5 text-xs leading-relaxed text-foreground"><AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-warning)]" />{issue}</li>)}</ul> : <p className="flex items-center gap-2 text-sm text-[var(--color-success)]"><CheckCircle2 className="h-4 w-4" />未发现需要立即处理的问题</p>}
+        <details><summary className="cursor-pointer text-xs font-medium text-primary">技术详情</summary><pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-[var(--radius)] bg-muted/50 p-3 text-xs text-foreground">{JSON.stringify(report, null, 2)}</pre></details>
       </div>
     </Card>
   )
+}
+
+function collectAuditIssues(report: Record<string, unknown>): string[] {
+  const output: string[] = []
+  const visit = (value: unknown, key = "") => {
+    if (output.length >= 20) return
+    if (typeof value === "string" && value.trim() && /(issue|problem|warning|missing|gap|建议|缺失|问题|风险)/i.test(`${key} ${value}`)) output.push(value.trim())
+    else if (Array.isArray(value)) value.forEach((item) => visit(item, key))
+    else if (value && typeof value === "object") Object.entries(value as Record<string, unknown>).forEach(([childKey, child]) => visit(child, childKey))
+  }
+  visit(report)
+  return [...new Set(output)]
 }

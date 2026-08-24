@@ -236,6 +236,38 @@ class FineGrainedGenerationTest(unittest.TestCase):
             )
         )
 
+    def test_completed_writing_units_are_reused_without_overwriting_checkpoint(self) -> None:
+        specs = plan_chapter_writing_units(node=self.node, policy=self.policy)
+        contexts = [
+            ChapterWritingUnitContext(spec=spec, selected_source_sections=[self.section], evidence_spans=[self.evidence])
+            for spec in specs
+        ]
+        completed = {spec.unit_id: f"## {spec.title}\n已完成单元内容。" for spec in specs}
+        checkpoint_calls: list[str] = []
+        task = ChapterTask(
+            node_id=self.node.id,
+            title=self.node.title,
+            target_word_count=2200,
+            source_matches=[SourceMatch(section_id=self.section.id, title_path=self.section.title_path, snippet=self.evidence.summary, score=0.9)],
+            source_mapping=SourceMappingResult(node_id=self.node.id, evidence=[self.evidence]),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            draft = generate_chapter(
+                project_id="project_resume",
+                node=self.node,
+                task=task,
+                llm=FakeLLMClient(),
+                artifacts=LocalArtifactRepository(Path(temp_dir)),
+                project_profile=ProjectProfile(project_name="当前项目"),
+                selected_source_sections=[self.section],
+                generation_policy=self.policy,
+                writing_unit_contexts=contexts,
+                completed_writing_units=completed,
+                unit_checkpoint_callback=lambda unit_id, _markdown: checkpoint_calls.append(unit_id),
+            )
+        self.assertEqual([], checkpoint_calls)
+        self.assertEqual(len(specs), len(draft.generation_metadata["writing_units"]))
+
     def test_generation_context_rolls_forward_and_is_renderable(self) -> None:
         state = initialize_generation_context(
             profile=ProjectProfile(

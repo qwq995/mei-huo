@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import Callable
 
 from coalplan.application.serialization import dump_model, to_json_text
 from coalplan.domain.documents import MarkdownSection
@@ -55,6 +56,9 @@ def generate_chapter(
     reference_atom_results: list[AtomRetrievalResult] | None = None,
     writing_unit_contexts: list[ChapterWritingUnitContext] | None = None,
     global_context: str = "",
+    progress_callback: Callable[[str, int, int, str], None] | None = None,
+    completed_writing_units: dict[str, str] | None = None,
+    unit_checkpoint_callback: Callable[[str, str], None] | None = None,
 ) -> ChapterDraft:
     task.status = TaskStatus.running
     generation_policy = _specialize_generation_policy(node, generation_policy)
@@ -70,6 +74,9 @@ def generate_chapter(
             required_fact_hints=required_fact_hints or [],
             generation_policy=generation_policy,
             writing_unit_contexts=writing_unit_contexts,
+            progress_callback=progress_callback,
+            completed_writing_units=completed_writing_units or {},
+            unit_checkpoint_callback=unit_checkpoint_callback,
         )
     else:
         prompt = build_chapter_prompt(
@@ -282,23 +289,37 @@ def _generate_chapter_by_writing_units(
     required_fact_hints: list[str],
     generation_policy: ChapterGenerationPolicy | None,
     writing_unit_contexts: list[ChapterWritingUnitContext],
+    progress_callback: Callable[[str, int, int, str], None] | None = None,
+    completed_writing_units: dict[str, str] | None = None,
+    unit_checkpoint_callback: Callable[[str, str], None] | None = None,
 ) -> tuple[str, list[WritingUnitTrace]]:
     outputs: list[str] = []
     traces: list[WritingUnitTrace] = []
     completed_context: list[str] = []
-    for context in sorted(writing_unit_contexts, key=lambda item: item.spec.sequence):
-        prompt = build_writing_unit_prompt(
-            node=node,
-            task=task,
-            context=context,
-            project_profile=project_profile,
-            user_context=user_context,
-            global_context=global_context,
-            completed_unit_context=completed_context,
-            required_fact_hints=required_fact_hints,
-            generation_policy=generation_policy,
-        )
-        unit_markdown = _normalize_writing_unit_markdown(llm.complete(prompt), context.spec.title)
+    ordered_contexts = sorted(writing_unit_contexts, key=lambda item: item.spec.sequence)
+    total = len(ordered_contexts)
+    completed_writing_units = completed_writing_units or {}
+    for index, context in enumerate(ordered_contexts, start=1):
+        reused = completed_writing_units.get(context.spec.unit_id)
+        if progress_callback and not reused:
+            progress_callback("writing", index - 1, total, f"正在生成第 {index} 个写作单元：{context.spec.title}")
+        if reused:
+            unit_markdown = reused
+        else:
+            prompt = build_writing_unit_prompt(
+                node=node,
+                task=task,
+                context=context,
+                project_profile=project_profile,
+                user_context=user_context,
+                global_context=global_context,
+                completed_unit_context=completed_context,
+                required_fact_hints=required_fact_hints,
+                generation_policy=generation_policy,
+            )
+            unit_markdown = _normalize_writing_unit_markdown(llm.complete(prompt), context.spec.title)
+            if unit_checkpoint_callback:
+                unit_checkpoint_callback(context.spec.unit_id, unit_markdown)
         outputs.append(unit_markdown)
         completed_context.append(f"{context.spec.title}：{compact_completed_unit(unit_markdown)}")
         traces.append(
@@ -312,6 +333,8 @@ def _generate_chapter_by_writing_units(
                 writing_skill_keys=list(node.matched_skill_keys),
             )
         )
+        if progress_callback:
+            progress_callback("writing", index, total, f"{'已复用' if reused else '已完成'}写作单元：{context.spec.title}")
     return (
         _assemble_writing_unit_chapter(
             node=node,
