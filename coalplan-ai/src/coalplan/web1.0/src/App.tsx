@@ -73,10 +73,10 @@ function Studio() {
   return (
     <JobsProvider projectId={project?.project_id ?? null}>
     <div className="flex min-h-screen flex-col">
-      <header className="sticky top-0 z-30 border-b border-border bg-background/90 backdrop-blur">
+      <header className="glass-surface sticky top-0 z-40 rounded-none border-x-0 border-t-0">
         <div className="mx-auto flex h-16 max-w-[1480px] items-center justify-between gap-4 px-5">
           <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-[var(--radius)] bg-primary text-primary-foreground">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--radius)] bg-primary text-primary-foreground shadow-sm">
               <PanelsTopLeft className="h-5 w-5" />
             </div>
             <div className="leading-tight">
@@ -86,7 +86,7 @@ function Studio() {
           </div>
           <div className="flex items-center gap-2">
           {project ? (
-            <div className="hidden items-center gap-2 rounded-[var(--radius)] border border-border bg-card px-3 py-1.5 md:flex">
+            <div className="hidden max-w-[300px] items-center gap-2 rounded-full border border-white/60 bg-white/55 px-3 py-1.5 shadow-sm backdrop-blur md:flex">
               <span className="h-2 w-2 rounded-full bg-accent" />
               <span className="max-w-[260px] truncate text-xs font-medium text-foreground">{project.name}</span>
             </div>
@@ -96,9 +96,10 @@ function Studio() {
         </div>
       </header>
 
-      <div className="mx-auto flex w-full max-w-[1480px] flex-1 flex-col gap-6 px-5 py-6 lg:flex-row">
-        <nav aria-label="生成流程" className="lg:w-64 lg:shrink-0">
-          <ol className="flex gap-2 overflow-x-auto lg:flex-col lg:gap-1.5 lg:overflow-visible">
+      <div className="mx-auto flex w-full max-w-[1480px] flex-1 items-start flex-col gap-4 px-4 py-4 sm:px-5 sm:py-6 lg:flex-row lg:gap-6">
+        <nav aria-label="生成流程" className="workflow-nav sticky top-16 z-30 -mx-4 w-[calc(100%+2rem)] shrink-0 border-b border-border bg-background/92 px-4 py-2 backdrop-blur-xl sm:-mx-5 sm:w-[calc(100%+2.5rem)] sm:px-5 lg:top-[88px] lg:mx-0 lg:w-64 lg:rounded-[var(--radius)] lg:border lg:border-white/60 lg:bg-white/58 lg:p-2 lg:shadow-[var(--shadow-soft)] lg:backdrop-blur-xl">
+          <div className="mb-2 hidden px-2 pt-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground lg:block">工作流</div>
+          <ol className="workflow-nav flex gap-2 overflow-x-auto pb-0.5 lg:flex-col lg:gap-1.5 lg:overflow-visible">
             {STEPS.map((step, idx) => {
               const StepIcon = step.icon
               const isActive = step.id === active
@@ -110,8 +111,8 @@ function Studio() {
                     onClick={() => goTo(step.id)}
                     disabled={locked}
                     className={cn(
-                      "group flex w-full items-center gap-3 rounded-[var(--radius)] border px-3 py-2.5 text-left transition-colors",
-                      isActive ? "border-primary/30 bg-primary/[0.06]" : "border-transparent hover:border-border hover:bg-card",
+                      "group flex min-h-[52px] w-full items-center gap-3 rounded-[var(--radius)] border px-3 py-2.5 text-left transition-[background-color,border-color,box-shadow]",
+                      isActive ? "border-primary/30 bg-primary/[0.08] shadow-sm" : "border-transparent hover:border-border hover:bg-white/65 hover:shadow-sm",
                       locked && "cursor-not-allowed opacity-45 hover:border-transparent hover:bg-transparent",
                     )}
                   >
@@ -139,20 +140,20 @@ function Studio() {
           </ol>
         </nav>
 
-        <main className="min-w-0 flex-1">
+        <main className="w-full min-w-0 flex-1 pb-10 lg:w-auto">
           {project ? <ProjectPulse key={`${project.project_id}-${active}-${experienceRevision}`} project={project} onNavigate={(step) => goTo(step as StepId)} /> : null}
           <div key={active} className="animate-fade-in">
             {active === "project" && <ProjectStep current={project} onSelect={selectProject} />}
             {active === "upload" && project && (
               <UploadStep
                 project={project}
-                onNext={() => setActive("outline")}
+                onNext={() => goTo("outline")}
                 onExperienceChanged={refreshExperience}
                 onProjectUpdated={setProject}
               />
             )}
-            {active === "outline" && project && <OutlineStep project={project} onNext={() => setActive("chapter")} />}
-            {active === "chapter" && project && <ChapterStep project={project} onNext={() => setActive("export")} />}
+            {active === "outline" && project && <OutlineStep project={project} onNext={() => goTo("chapter")} />}
+            {active === "chapter" && project && <ChapterStep project={project} onNext={() => goTo("export")} />}
             {active === "export" && project && <ExportStep project={project} />}
           </div>
         </main>
@@ -167,13 +168,32 @@ function ProjectPulse({ project, onNavigate }: { project: ProjectResponse; onNav
     () => getProjectExperienceSummary(project.project_id),
     [project.project_id],
   )
+  if (summary.loading) {
+    return (
+      <section className="glass-surface mb-5 rounded-[var(--radius)] px-4 py-3" aria-label="项目当前进度">
+        <p className="text-sm text-muted-foreground">正在读取项目进度...</p>
+      </section>
+    )
+  }
+  if (summary.error) {
+    return (
+      <section className="glass-surface mb-5 rounded-[var(--radius)] px-4 py-3" aria-label="项目当前进度">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-sm text-muted-foreground">项目进度暂时无法读取，当前页面仍可继续操作。</p>
+          <button type="button" className="text-xs font-medium text-primary hover:underline" onClick={() => void summary.reload()}>
+            重新读取
+          </button>
+        </div>
+      </section>
+    )
+  }
   if (!summary.data) return null
   const data = summary.data
   const progress = data.progress
   const action = data.actions[0]
   const needsAttention = progress.needs_attention_chapters ?? 0
   return (
-    <section className="mb-5 border-y border-border bg-muted/30 px-4 py-3" aria-label="项目当前进度">
+    <section className="glass-surface mb-5 rounded-[var(--radius)] px-4 py-3" aria-label="项目当前进度">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="flex items-center gap-2 text-sm font-medium text-foreground">
@@ -190,6 +210,7 @@ function ProjectPulse({ project, onNavigate }: { project: ProjectResponse; onNav
         </div>
         {action?.target_step ? (
           <button
+            type="button"
             className="text-xs font-medium text-primary hover:underline"
             onClick={() => onNavigate(action.target_step!)}
           >

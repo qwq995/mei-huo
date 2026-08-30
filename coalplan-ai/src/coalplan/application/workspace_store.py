@@ -8,6 +8,12 @@ from pathlib import Path
 from uuid import uuid4
 
 from coalplan.application.content_revision_plan import build_content_revision_plan, render_content_revision_plan_markdown
+from coalplan.application.chapter_generation_plan import (
+    ChapterGenerationPlan,
+    render_chapter_plan_for_prompt,
+    validate_saved_plan,
+    with_plan_fingerprint,
+)
 from sqlalchemy import func
 
 from coalplan.application.generation_metadata_audit import audit_version_generation_metadata
@@ -20,6 +26,8 @@ from coalplan.infrastructure.database.models import (
     AIChangeProposalRecord,
     ChapterAttachmentRecord,
     ChapterSupplementRecord,
+    ProjectMemoryRecord,
+    SupplementBatchRecord,
     ChapterVersionRecord,
     ProjectOutlineNodeRecord,
 )
@@ -231,10 +239,35 @@ class WorkspaceStore:
             session.commit()
         return self.list_outline_nodes(project_id)
 
-    def delete_outline_node(self, project_id: str, node_id: str) -> None:
+    def delete_outline_node(self, project_id: str, node_id: str, *, delete_subtree: bool = True) -> None:
         with self.session_factory() as session:
             row = _get_outline(session, project_id, node_id)
-            session.delete(row)
+            rows = session.query(ProjectOutlineNodeRecord).filter_by(project_id=project_id).all()
+            children_by_parent: dict[str | None, list[ProjectOutlineNodeRecord]] = {}
+            for item in rows:
+                children_by_parent.setdefault(item.parent_id, []).append(item)
+            if delete_subtree:
+                to_delete: list[ProjectOutlineNodeRecord] = []
+                queue = [row]
+                while queue:
+                    current = queue.pop()
+                    to_delete.append(current)
+                    queue.extend(children_by_parent.get(current.node_id, []))
+                for item in to_delete:
+                    session.delete(item)
+            else:
+                promoted = children_by_parent.get(row.node_id, [])
+                for child in promoted:
+                    child.parent_id = row.parent_id
+
+                    def lower_descendant_levels(parent_id: str) -> None:
+                        for descendant in children_by_parent.get(parent_id, []):
+                            descendant.level = max(1, (descendant.level or 1) - 1)
+                            lower_descendant_levels(descendant.node_id)
+
+                    child.level = max(1, (child.level or 1) - 1)
+                    lower_descendant_levels(child.node_id)
+                session.delete(row)
             session.commit()
 
     def outline_tree(self, project_id: str) -> list[TemplateNode]:
@@ -299,6 +332,7 @@ class WorkspaceStore:
             )
             return {
                 "outline_node": _outline_dict(outline),
+                "generation_plan": _generation_plan_from_outline(outline),
                 "supplements": [_supplement_dict(row) for row in supplements],
                 "attachments": [_attachment_dict(row) for row in attachments],
                 "versions": [self._version_dict_with_tree(row) for row in versions],
@@ -306,18 +340,258 @@ class WorkspaceStore:
                 "proposals": [_proposal_dict(row) for row in proposals],
             }
 
+    def list_project_memories(self, project_id: str, *, status: str = "active") -> list[dict]:
+        with self.session_factory() as session:
+            query = session.query(ProjectMemoryRecord).filter_by(project_id=project_id)
+            if status:
+                query = query.filter_by(status=status)
+            rows = query.order_by(ProjectMemoryRecord.updated_at.desc()).all()
+            return [_memory_dict(row) for row in rows]
+
+    def add_project_memory(self, project_id: str, payload: dict) -> dict:
+        content = str(payload.get("content") or "").strip()
+        if not content:
+            raise ValueError("项目长期记忆内容不能为空")
+        topic = str(payload.get("topic") or payload.get("title") or "项目补充信息").strip()
+        tags = _unique_texts(payload.get("tags") or [])
+        with self.session_factory() as session:
+            duplicate = session.query(ProjectMemoryRecord).filter_by(project_id=project_id, content=content, status="active").first()
+            if duplicate is not None:
+                return _memory_dict(duplicate)
+            row = ProjectMemoryRecord(
+                id=new_id("memory"), project_id=project_id, topic=topic, content=content,
+                source_node_id=payload.get("source_node_id"), tags_json=_json(tags), status="active",
+            )
+            session.add(row)
+            session.commit()
+            return _memory_dict(row)
+
+    def update_project_memory(self, project_id: str, memory_id: str, payload: dict) -> dict:
+        with self.session_factory() as session:
+            row = session.get(ProjectMemoryRecord, memory_id)
+            if row is None or row.project_id != project_id:
+                raise KeyError(f"Unknown memory_id: {memory_id}")
+            for key in ["topic", "content", "source_node_id", "status"]:
+                if key in payload and payload[key] is not None:
+                    setattr(row, key, payload[key])
+            if "tags" in payload:
+                row.tags_json = _json(_unique_texts(payload["tags"] or []))
+            row.updated_at = datetime.now()
+            session.commit()
+            return _memory_dict(row)
+
+    def match_project_memories(self, project_id: str, node: TemplateNode, *, limit: int = 12) -> list[dict]:
+        memories = self.list_project_memories(project_id)
+        query = " ".join([
+            node.title, *node.source_rules, *node.auto_fill, *node.manual_fill, *node.special_notes,
+            (node.chapter_summary or {}).get("overview", ""),
+            " ".join((node.chapter_summary or {}).get("key_points", [])),
+        ])
+        ranked: list[tuple[int, dict]] = []
+        for memory in memories:
+            score, matched = _memory_relevance(query, memory)
+            if score <= 0:
+                continue
+            item = dict(memory)
+            item["match_score"] = score
+            item["matched_terms"] = matched
+            ranked.append((score, item))
+        ranked.sort(key=lambda pair: (-pair[0], pair[1]["memory_id"]))
+        return [item for _, item in ranked[:limit]]
+
+    def create_supplement_batch(self, project_id: str) -> dict:
+        nodes = self.list_outline_nodes(project_id)
+        node_by_id = {node["node_id"]: node for node in nodes}
+        version_needs: dict[str, list[str]] = {}
+        with self.session_factory() as session:
+            versions = session.query(ChapterVersionRecord).filter_by(project_id=project_id).all()
+            for version in versions:
+                version_needs.setdefault(version.node_id, []).extend(
+                    re.findall(r"【需人工补充：?(.*?)】", version.markdown or "")
+                )
+        buckets: list[dict] = []
+        for node in nodes:
+            summary = node.get("chapter_summary") or {}
+            candidates = [
+                *node.get("manual_fill", []),
+                *summary.get("missing_information", []),
+                *summary.get("unresolved_items", []),
+            ]
+            for text in candidates:
+                label = _clean_missing_item(text)
+                if not label:
+                    continue
+                existing = next((item for item in buckets if _missing_related(item["label"], label)), None)
+                if existing is None:
+                    existing = {
+                        "item_id": new_id("need"), "label": label, "description": label,
+                        "node_ids": [], "node_titles": [], "source_items": [],
+                        "value": "", "status": "pending", "allow_ai": True,
+                    }
+                    buckets.append(existing)
+                if node["node_id"] not in existing["node_ids"]:
+                    existing["node_ids"].append(node["node_id"])
+                    existing["node_titles"].append(node.get("title", ""))
+                existing["source_items"].append({"node_id": node["node_id"], "text": str(text)})
+        for node_id, needs in version_needs.items():
+            node = node_by_id.get(node_id)
+            if node is None:
+                continue
+            for text in needs:
+                label = _clean_missing_item(text)
+                if not label:
+                    continue
+                existing = next((item for item in buckets if _missing_related(item["label"], label)), None)
+                if existing is None:
+                    existing = {
+                        "item_id": new_id("need"), "label": label, "description": label,
+                        "node_ids": [], "node_titles": [], "source_items": [],
+                        "value": "", "status": "pending", "allow_ai": True,
+                    }
+                    buckets.append(existing)
+                if node_id not in existing["node_ids"]:
+                    existing["node_ids"].append(node_id)
+                    existing["node_titles"].append(node.get("title", ""))
+                existing["source_items"].append({"node_id": node_id, "text": label, "source": "generated_version"})
+        payload = {
+            "batch_id": new_id("suppbatch"), "project_id": project_id,
+            "scope": "all_chapters", "items": buckets,
+            "message": "已按语义相近的待补事项合并；填写后会回映到关联章节，是否重新生成由用户确认。",
+        }
+        with self.session_factory() as session:
+            row = SupplementBatchRecord(id=payload["batch_id"], project_id=project_id, payload_json=_json(payload), status="draft")
+            session.add(row)
+            session.commit()
+        return payload
+
+    def get_supplement_batch(self, project_id: str, batch_id: str) -> dict:
+        with self.session_factory() as session:
+            row = session.get(SupplementBatchRecord, batch_id)
+            if row is None or row.project_id != project_id:
+                raise KeyError(f"Unknown supplement_batch_id: {batch_id}")
+            return _loads(row.payload_json)
+
+    def apply_supplement_batch(self, project_id: str, batch_id: str, values: dict[str, str], selected_item_ids: list[str] | None = None) -> dict:
+        payload = self.get_supplement_batch(project_id, batch_id)
+        selected = set(selected_item_ids) if selected_item_ids is not None else {item["item_id"] for item in payload.get("items", [])}
+        updated: list[dict] = []
+        affected: set[str] = set()
+        with self.session_factory() as session:
+            for item in payload.get("items", []):
+                if item["item_id"] not in selected:
+                    continue
+                value = str(values.get(item["item_id"], item.get("value") or "")).strip()
+                if not value:
+                    continue
+                item["value"] = value
+                item["status"] = "filled"
+                updated.append(item)
+                for node_id in item.get("node_ids", []):
+                    affected.add(node_id)
+                    supplement = session.query(ChapterSupplementRecord).filter_by(
+                        project_id=project_id, node_id=node_id, title=item["label"], content=value,
+                    ).first()
+                    if supplement is None:
+                        supplement = ChapterSupplementRecord(
+                            id=new_id("supp"), project_id=project_id, node_id=node_id,
+                            kind="project_memory", title=item["label"], content=value,
+                            must_include=True, sort_order=999,
+                        )
+                        session.add(supplement)
+                    duplicate = session.query(ProjectMemoryRecord).filter_by(project_id=project_id, content=value, status="active").first()
+                    if duplicate is None:
+                        session.add(ProjectMemoryRecord(
+                            id=new_id("memory"), project_id=project_id, topic=item["label"], content=value,
+                            source_node_id=node_id, source_supplement_id=supplement.id,
+                            tags_json=_json(item.get("node_titles", [])), status="active",
+                        ))
+            payload["updated_item_ids"] = [item["item_id"] for item in updated]
+            payload["affected_node_ids"] = sorted(affected)
+            payload["status"] = "applied"
+            row = session.get(SupplementBatchRecord, batch_id)
+            row.payload_json = _json(payload)
+            row.status = "applied"
+            row.updated_at = datetime.now()
+            session.commit()
+        return {"batch_id": batch_id, "status": "applied", "updated_items": updated, "affected_node_ids": sorted(affected), "needs_user_confirmation_to_regenerate": bool(affected)}
+
+    def save_supplement_ai_suggestions(self, project_id: str, batch_id: str, suggestions: dict[str, str]) -> dict:
+        payload = self.get_supplement_batch(project_id, batch_id)
+        for item in payload.get("items", []):
+            suggestion = str(suggestions.get(item["item_id"]) or "").strip()
+            if suggestion:
+                item["ai_suggestion"] = suggestion
+        payload["ai_suggestion_status"] = "ready"
+        with self.session_factory() as session:
+            row = session.get(SupplementBatchRecord, batch_id)
+            if row is None or row.project_id != project_id:
+                raise KeyError(f"Unknown supplement_batch_id: {batch_id}")
+            row.payload_json = _json(payload)
+            row.updated_at = datetime.now()
+            session.commit()
+        return payload
+
     def render_chapter_context(self, project_id: str, node_id: str) -> str:
         workspace = self.get_workspace(project_id, node_id)
-        lines = ["## 用户补充材料"]
+        lines = []
+        plan_context = render_chapter_plan_for_prompt(workspace.get("generation_plan"))
+        if plan_context:
+            lines.extend([plan_context, ""])
+        lines.append("## 用户补充材料")
         for item in workspace["supplements"]:
+            if item.get("kind") == "ignored_manual_requirement":
+                continue
             must = "必须写入正文" if item["must_include"] else "参考材料"
             lines.extend([f"### {item['title'] or item['kind']}（{must}）", item["content"], ""])
         for item in workspace["attachments"]:
             lines.extend([f"### 附件：{item['file_name']}", f"路径：{item['artifact_path']}", f"说明：{item['description'] or '【无】'}", ""])
+        node = TemplateNode.model_validate(workspace["outline_node"])
+        memories = self.match_project_memories(project_id, node)
+        if memories:
+            lines.extend([
+                "## 项目长期记忆（按本章相关度匹配）",
+                "以下内容来自用户补充或确认过的项目级信息，可供本章复用；如与当前投标资料冲突，以有效项目资料和用户最新确认为准。",
+            ])
+            for item in memories:
+                terms = "、".join(item.get("matched_terms") or []) or "相关"
+                lines.extend([f"### {item['topic'] or '项目补充信息'}（匹配：{terms}）", item["content"], ""])
         selected = next((item for item in workspace["versions"] if item["id"] == workspace["selected_version_id"]), None)
         if selected:
             lines.extend(["## 当前选中历史版本", selected["markdown"][:4000]])
         return "\n".join(lines).strip()
+
+    def save_chapter_generation_plan(self, project_id: str, node_id: str, payload: dict) -> dict:
+        with self.session_factory() as session:
+            row = _get_outline(session, project_id, node_id)
+            plan = validate_saved_plan(payload, node_id=node_id, title=row.title)
+            summary = _loads(row.chapter_summary_json)
+            summary["generation_plan"] = plan.model_dump()
+            row.chapter_summary_json = _json(summary)
+            row.updated_at = datetime.now()
+            session.commit()
+            return plan.model_dump()
+
+    def create_chapter_plan_proposal(
+        self,
+        project_id: str,
+        node_id: str,
+        suggestion: str,
+        plan: ChapterGenerationPlan,
+        *,
+        base_fingerprint: str,
+    ) -> dict:
+        preview = {
+            "plan": plan.model_dump(),
+            "base_fingerprint": base_fingerprint,
+        }
+        return self._create_proposal(
+            project_id,
+            "chapter_plan",
+            node_id,
+            suggestion,
+            preview,
+            reuse_pending=True,
+        )
 
     def add_supplement(self, project_id: str, node_id: str, payload: dict) -> dict:
         with self.session_factory() as session:
@@ -335,6 +609,21 @@ class WorkspaceStore:
                 sort_order=int(sort_order),
             )
             session.add(row)
+            # A non-ignored supplement becomes reusable project memory immediately.
+            # The original chapter supplement remains the source record and can still be edited.
+            content = str(payload.get("content") or "").strip()
+            if content and payload.get("kind", "text") != "ignored_manual_requirement":
+                duplicate = session.query(ProjectMemoryRecord).filter_by(
+                    project_id=project_id, content=content, status="active"
+                ).first()
+                if duplicate is None:
+                    session.add(ProjectMemoryRecord(
+                        id=new_id("memory"), project_id=project_id,
+                        topic=str(payload.get("title") or "项目补充信息").strip(),
+                        content=content, source_node_id=node_id,
+                        source_supplement_id=row.id,
+                        tags_json=_json([str(payload.get("title") or ""), node_id]), status="active",
+                    ))
             session.commit()
             return _supplement_dict(row)
 
@@ -345,6 +634,15 @@ class WorkspaceStore:
                 if key in payload:
                     setattr(row, key, payload[key])
             row.updated_at = datetime.now()
+            memory = session.query(ProjectMemoryRecord).filter_by(
+                project_id=project_id, source_supplement_id=supplement_id, status="active"
+            ).first()
+            if memory is not None:
+                memory.topic = row.title or memory.topic
+                memory.content = row.content
+                memory.updated_at = datetime.now()
+                if row.kind == "ignored_manual_requirement" or not row.content.strip():
+                    memory.status = "inactive"
             session.commit()
             return _supplement_dict(row)
 
@@ -413,6 +711,14 @@ class WorkspaceStore:
                 created_by=created_by,
                 status="selected" if select else "candidate",
             )
+            # Keep version history immutable and addressable. A chapter-level
+            # draft path is accepted for compatibility but is never reused.
+            if artifact_path:
+                row.artifact_path = self.artifacts.write_text(
+                    project_id,
+                    f"chapters/{node_id}/versions/{row.id}.md",
+                    markdown,
+                )
             session.add(row)
             if select:
                 outline = _get_outline(session, project_id, node_id)
@@ -468,6 +774,44 @@ class WorkspaceStore:
         payload["organization_audit"] = audit_version_generation_metadata(version)
         return payload
 
+    def confirm_version_review(
+        self,
+        project_id: str,
+        node_id: str,
+        version_id: str,
+        *,
+        note: str = "",
+    ) -> dict:
+        version = self.get_version(project_id, node_id, version_id)
+        metadata = version.get("generation_metadata")
+        if not isinstance(metadata, dict):
+            raise ValueError("该版本没有生成凭据，不能直接确认为通过。")
+        organization_audit = audit_version_generation_metadata(version)
+        if organization_audit.get("status") != "passed":
+            issues = organization_audit.get("issues") or []
+            raise ValueError("章节提纲仍有未覆盖内容：" + (str(issues[0]) if issues else "请继续修订后再确认。"))
+        updated = json.loads(json.dumps(metadata, ensure_ascii=False))
+        updated["quality_review"] = {
+            "status": "passed",
+            "advisory_only": False,
+            "message": "用户已复核 AI 修订版本，并确认可作为当前章节使用。",
+            "issues": [],
+            "next_actions": [],
+            "reviewed_by": "user",
+            "review_note": note.strip(),
+            "reviewed_at": datetime.now().isoformat(),
+        }
+        self._write_generation_metadata(project_id, node_id, version_id, updated)
+        evidence_audit = version.get("evidence_audit")
+        if isinstance(evidence_audit, dict):
+            self._write_evidence_audit(
+                project_id,
+                node_id,
+                version_id,
+                _respect_confirmed_plan_in_evidence_audit(evidence_audit, updated),
+            )
+        return self.get_version(project_id, node_id, version_id)
+
     def get_version_evidence_audit(self, project_id: str, node_id: str, version_id: str) -> dict:
         version = self.get_version(project_id, node_id, version_id)
         audit = version.get("evidence_audit")
@@ -510,8 +854,25 @@ class WorkspaceStore:
             evidence_audit=_refresh_evidence_audit_for_markdown(evidence_audit, updated_markdown) if evidence_audit else None,
         )
 
-    def propose_chapter_edit(self, project_id: str, node_id: str, suggestion: str, preview_markdown: str) -> dict:
-        return self._create_proposal(project_id, "chapter", node_id, suggestion, {"markdown": preview_markdown})
+    def propose_chapter_edit(
+        self,
+        project_id: str,
+        node_id: str,
+        suggestion: str,
+        preview_markdown: str,
+        *,
+        display_markdown: str | None = None,
+    ) -> dict:
+        return self._create_proposal(
+            project_id,
+            "chapter",
+            node_id,
+            suggestion,
+            {
+                "markdown": preview_markdown,
+                "display_markdown": display_markdown if display_markdown is not None else preview_markdown,
+            },
+        )
 
     def propose_outline_change(
         self, project_id: str, suggestion: str, preview_nodes: list[dict], *,
@@ -560,11 +921,13 @@ class WorkspaceStore:
             if proposal.target_type == "chapter":
                 node = _get_outline(session, project_id, proposal.target_id)
                 selected = None
+                selected_version_data = None
                 if node.selected_version_id:
                     selected = session.get(ChapterVersionRecord, node.selected_version_id)
                 fallback_tree = None
                 if selected is not None:
-                    fallback_tree = self._version_dict_with_tree(selected).get("content_tree")
+                    selected_version_data = self._version_dict_with_tree(selected)
+                    fallback_tree = selected_version_data.get("content_tree")
                 version_no = (session.query(func.max(ChapterVersionRecord.version_no)).filter_by(project_id=project_id, node_id=proposal.target_id).scalar() or 0) + 1
                 _mark_versions_candidate(session, project_id, proposal.target_id)
                 version = ChapterVersionRecord(
@@ -578,10 +941,32 @@ class WorkspaceStore:
                     source_section_ids_json=selected.source_section_ids_json if selected is not None else "[]",
                     supplement_ids_json=selected.supplement_ids_json if selected is not None else "[]",
                     created_by="ai",
-                    status="selected",
+                    status="candidate",
+                )
+                version.artifact_path = self.artifacts.write_text(
+                    project_id,
+                    f"chapters/{proposal.target_id}/versions/{version.id}.md",
+                    version.markdown,
                 )
                 session.add(version)
-                node.selected_version_id = version.id
+            elif proposal.target_type == "chapter_plan":
+                node = _get_outline(session, project_id, proposal.target_id)
+                current_plan = _generation_plan_from_outline(node)
+                current_fingerprint = str((current_plan or {}).get("fingerprint") or "")
+                expected = str(data.get("base_fingerprint") or "")
+                if expected and expected != current_fingerprint:
+                    raise ValueError("章节提纲在 AI 建议生成后已被修改，请重新生成建议。")
+                plan = validate_saved_plan(
+                    data.get("plan") or {},
+                    node_id=proposal.target_id,
+                    title=node.title,
+                )
+                plan.status = "draft"
+                plan = with_plan_fingerprint(plan)
+                summary = _loads(node.chapter_summary_json)
+                summary["generation_plan"] = plan.model_dump()
+                node.chapter_summary_json = _json(summary)
+                node.updated_at = datetime.now()
             elif proposal.target_type == "outline":
                 current = [_outline_dict(row) for row in session.query(ProjectOutlineNodeRecord).filter_by(project_id=project_id).all()]
                 expected = data.get("outline_fingerprint")
@@ -663,6 +1048,31 @@ class WorkspaceStore:
                     markdown=version.markdown,
                     fallback_content_tree=fallback_tree,
                 )
+                previous_metadata = (selected_version_data or {}).get("generation_metadata")
+                if isinstance(previous_metadata, dict):
+                    edit_metadata = json.loads(json.dumps(previous_metadata, ensure_ascii=False))
+                else:
+                    edit_metadata = {}
+                edit_metadata["ai_edit"] = {
+                    "proposal_id": proposal.id,
+                    "suggestion": proposal.suggestion,
+                    "based_on_version_id": selected.id if selected is not None else None,
+                }
+                edit_metadata["quality_review"] = {
+                    "status": "needs_repair",
+                    "issues": ["AI 局部修订已应用，需复核提纲覆盖、项目事实和规范约束后再视为通过。"],
+                    "next_actions": ["在章节正文与生成凭据中核对本次修改，确认后运行章节审查或继续修订。"],
+                }
+                self._write_generation_metadata(project_id, proposal.target_id, version.id, edit_metadata)
+                previous_audit = (selected_version_data or {}).get("evidence_audit")
+                if isinstance(previous_audit, dict):
+                    refreshed_audit = _refresh_evidence_audit_for_markdown(previous_audit, version.markdown)
+                    self._write_evidence_audit(
+                        project_id,
+                        proposal.target_id,
+                        version.id,
+                        _respect_confirmed_plan_in_evidence_audit(refreshed_audit, edit_metadata),
+                    )
             return _proposal_dict(proposal)
 
     def restore_outline_snapshot(self, project_id: str, snapshot_id: str) -> dict:
@@ -1008,6 +1418,28 @@ def _outline_dict(row: ProjectOutlineNodeRecord) -> dict:
     return payload
 
 
+def _respect_confirmed_plan_in_evidence_audit(audit: dict, metadata: dict) -> dict:
+    plan = metadata.get("generation_plan") if isinstance(metadata, dict) else None
+    if not isinstance(plan, dict) or plan.get("status") != "confirmed":
+        return audit
+    payload = json.loads(json.dumps(audit, ensure_ascii=False))
+    suppressed_codes = {"omitted_required_source_facts", "low_evidence_utilization"}
+    suppressed = [
+        item for item in payload.get("issues") or []
+        if isinstance(item, dict) and item.get("code") in suppressed_codes
+    ]
+    payload["issues"] = [
+        item for item in payload.get("issues") or []
+        if not (isinstance(item, dict) and item.get("code") in suppressed_codes)
+    ]
+    payload["confirmed_plan_scope"] = {
+        "controlled": True,
+        "suppressed_issue_codes": sorted({str(item.get("code")) for item in suppressed}),
+        "message": "未采用的映射事实仍保留追溯记录，但已确认提纲范围优先，不强制把范围外事实写入正文。",
+    }
+    return payload
+
+
 def _outline_readiness(node: dict) -> tuple[str, list[str]]:
     if node.get("enabled") is False:
         return "disabled", ["节点已禁用"]
@@ -1086,9 +1518,75 @@ def _proposal_dict(row: AIChangeProposalRecord) -> dict:
         "created_at": row.created_at.isoformat(),
         "applied_at": row.applied_at.isoformat() if row.applied_at else None,
     }
+
+
+def _memory_dict(row: ProjectMemoryRecord) -> dict:
+    return {
+        "memory_id": row.id,
+        "project_id": row.project_id,
+        "topic": row.topic,
+        "content": row.content,
+        "source_node_id": row.source_node_id,
+        "source_supplement_id": row.source_supplement_id,
+        "tags": _loads(row.tags_json),
+        "status": row.status,
+        "created_at": row.created_at.isoformat() if row.created_at else "",
+        "updated_at": row.updated_at.isoformat() if row.updated_at else "",
+    }
+
+
+def _unique_texts(items) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        value = str(item).strip()
+        key = re.sub(r"\s+", "", value).lower()
+        if value and key not in seen:
+            seen.add(key)
+            output.append(value)
+    return output[:30]
+
+
+def _memory_relevance(query: str, memory: dict) -> tuple[int, list[str]]:
+    memory_topic = str(memory.get("topic") or "")
+    memory_text = " ".join([memory_topic, str(memory.get("content") or ""), *[str(x) for x in memory.get("tags") or []]])
+    query_terms = _memory_terms(query)
+    memory_terms = set(_memory_terms(memory_text))
+    matched = [term for term in query_terms if term in memory_terms]
+    topic_terms = set(_memory_terms(memory_topic))
+    score = sum(5 if term in topic_terms else 2 for term in matched)
+    if memory.get("source_node_id") and memory.get("source_node_id") in query:
+        score += 4
+    return score, list(dict.fromkeys(matched))[:12]
+
+
+def _memory_terms(value: str) -> list[str]:
+    terms = re.findall(r"[\u4e00-\u9fff]{2,8}|[A-Za-z]{2,}|\d+(?:\.\d+)?", value or "")
+    stop = {"项目", "工程", "施工", "信息", "内容", "本章", "补充", "用于", "相关"}
+    return list(dict.fromkeys(term.lower() for term in terms if term not in stop))
+
+
+def _clean_missing_item(value: str) -> str:
+    text = re.sub(r"【?需人工补充：?", "", str(value or ""))
+    text = text.replace("】", "").strip(" -*•；;，,。")
+    return re.sub(r"\s+", " ", text)[:240]
+
+
+def _missing_related(left: str, right: str) -> bool:
+    a = set(_memory_terms(left))
+    b = set(_memory_terms(right))
+    if not a or not b:
+        return re.sub(r"\s+", "", left) == re.sub(r"\s+", "", right)
+    return left == right or len(a & b) >= max(1, min(len(a), len(b)) // 2)
     if row.target_type == "outline" and isinstance(preview, dict):
         payload["snapshot_id"] = preview.get("snapshot_id")
     return payload
+
+
+def _generation_plan_from_outline(row: ProjectOutlineNodeRecord) -> dict | None:
+    summary = _loads(row.chapter_summary_json)
+    plan = summary.get("generation_plan") if isinstance(summary, dict) else None
+    return plan if isinstance(plan, dict) else None
 
 
 def _outline_fingerprint(nodes: list[dict]) -> str:

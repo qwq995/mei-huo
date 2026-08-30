@@ -478,8 +478,21 @@ def _toc_title(item: SourceTocItem) -> str:
 
 
 def _chapter_policy(node: TemplateNode, toc_items: list[SourceTocItem]) -> ChapterGenerationPolicy:
-    title_blob = " ".join([node.title, *node.source_rules, *node.auto_fill, *node.special_notes])
-    pattern_matches = match_patterns_for_text(title_blob, limit=3)
+    saved_plan = (node.chapter_summary or {}).get("generation_plan")
+    confirmed_plan = saved_plan if isinstance(saved_plan, dict) and saved_plan.get("status") == "confirmed" else None
+    plan_topics = [
+        str(value).strip()
+        for item in ((confirmed_plan or {}).get("items") or [])
+        if item.get("enabled", True)
+        for value in [item.get("title"), *(item.get("key_points") or [])]
+        if str(value or "").strip()
+    ]
+    title_blob = (
+        " ".join([node.title, str(confirmed_plan.get("scope_statement") or ""), *plan_topics])
+        if confirmed_plan
+        else " ".join([node.title, *node.source_rules, *node.auto_fill, *node.special_notes])
+    )
+    pattern_matches = [] if confirmed_plan else match_patterns_for_text(title_blob, limit=3)
     pattern_keys = [match.pattern_key for match in pattern_matches]
     primary_pattern = pattern_keys[0] if pattern_keys else None
     pattern_required_source_facts = _merge_ordered(*[match.required_source_facts for match in pattern_matches])
@@ -489,7 +502,7 @@ def _chapter_policy(node: TemplateNode, toc_items: list[SourceTocItem]) -> Chapt
     deep = _contains_any(title_blob, DEEP_DETAIL_TERMS) or primary_pattern == "craft"
     split_candidate = _is_split_candidate_node(node.title, primary_pattern)
     gate = _contains_any(title_blob, QUALITY_GATE_TERMS) or primary_pattern in {"deployment", "quality", "safety", "environment", "schedule_resource"}
-    source_subtopics = _source_subtopics_for_node(node, toc_items)
+    source_subtopics = [] if confirmed_plan else _source_subtopics_for_node(node, toc_items)
     split_required = bool(split_candidate and ((target is None or target >= 1200) or len(source_subtopics) >= 3))
     if split_required:
         detail_level = "subsection_required"
@@ -508,7 +521,11 @@ def _chapter_policy(node: TemplateNode, toc_items: list[SourceTocItem]) -> Chapt
         max_source_matches=14 if split_required else 10 if deep else 8,
         max_evidence_spans=28 if split_required else 20 if deep else 14,
         generate_when_no_source=False,
-        required_subtopics=_merge_ordered(_required_subtopics(title_blob), source_subtopics),
+        required_subtopics=(
+            _merge_ordered(plan_topics, source_subtopics)
+            if confirmed_plan
+            else _merge_ordered(_required_subtopics(title_blob), source_subtopics)
+        ),
         source_subtopics=source_subtopics,
         writing_pattern_key=primary_pattern,
         writing_pattern_matches=pattern_keys,

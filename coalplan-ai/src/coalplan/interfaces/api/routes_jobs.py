@@ -49,3 +49,13 @@ def retry_job(project_id: str, job_id: str, request: Request):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/jobs/{job_id}/pause", status_code=202)
+def pause_job(project_id: str, job_id: str, request: Request):
+    try:
+        return request.app.state.job_manager.pause(project_id, job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

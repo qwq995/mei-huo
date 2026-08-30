@@ -71,7 +71,10 @@ def match_chapter_skills(
             elif token in normalized_context:
                 score += 2
                 terms.append(alias)
-        if title_matched:
+        # Title hits rank highest, while context-only hits remain eligible. This
+        # matters for short nodes such as "专项措施" whose parent/context names
+        # the real craft or risk domain.
+        if title_matched or score >= 4:
             matches.append(
                 ChapterSkillMatch(
                     skill_key=skill.key,
@@ -147,6 +150,7 @@ def render_chapter_skills_for_prompt(node: TemplateNode) -> str:
                     f"### skill: {skill.key}",
                     f"- 名称：{skill.name}",
                     "- 证据要求：" + "；".join(skill.evidence_requirements),
+                    "- 推荐子任务：" + "；".join(item.title for item in skill.outline_expansion),
                     "- 生成顺序与控制：",
                     *[f"  - {item}" for item in skill.generation_rules],
                     "- 必须人工确认：" + "；".join(skill.human_only_items),
@@ -154,6 +158,41 @@ def render_chapter_skills_for_prompt(node: TemplateNode) -> str:
                 ]
             )
         )
+    # The generated pattern library is derived from real local sample TOCs.
+    # It contributes structure seeds only; it is deliberately not used as a fact source.
+    try:
+        from coalplan.application.writing_pattern_library import match_patterns_for_text, pattern_for_key
+
+        pattern_matches = match_patterns_for_text(
+            " ".join(
+                [
+                    node.title,
+                    *node.source_rules,
+                    *node.auto_fill,
+                    *node.manual_fill,
+                    *node.special_notes,
+                    node.chapter_summary.get("overview", "") if node.chapter_summary else "",
+                ]
+            ),
+            limit=2,
+        )
+        for match in pattern_matches:
+            pattern = pattern_for_key(match.pattern_key)
+            if pattern is None:
+                continue
+            blocks.append(
+                "\n".join(
+                    [
+                        f"### local-corpus-pattern: {pattern.key}",
+                        "- 本地样本高频标题：" + "；".join(pattern.corpus_common_headings[:10]),
+                        "- 本地样本组织方式：" + "；".join(pattern.preferred_structure),
+                        "- 生成动作：" + "；".join(pattern.auto_writable_moves[:8]),
+                        "- 本地样本依据：" + "；".join(pattern.corpus_basis[:4]),
+                    ]
+                )
+            )
+    except Exception:
+        pass
     return "\n\n".join(blocks) or "无匹配特化 skill。"
 
 

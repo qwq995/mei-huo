@@ -10,6 +10,11 @@ class ProjectCreateRequest(BaseModel):
     outline_template_id: str | None = None
 
 
+class ProjectMetadataUpdateRequest(BaseModel):
+    name: str
+    project_tags: list[str] = Field(default_factory=list)
+
+
 class ProjectTemplateUpdateRequest(BaseModel):
     template_id: str = Field(default="coal_fire")
 
@@ -67,6 +72,27 @@ class SupplementRequest(BaseModel):
     sort_order: int | None = None
 
 
+class ProjectMemoryRequest(BaseModel):
+    topic: str = "项目补充信息"
+    content: str
+    source_node_id: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    status: str = "active"
+
+
+class ChapterBasisPreferencesRequest(BaseModel):
+    atom_ids: list[str] = Field(default_factory=list)
+    excluded_atom_ids: list[str] = Field(default_factory=list)
+    skill_keys: list[str] = Field(default_factory=list)
+    prompt: str = ""
+
+
+class SupplementBatchApplyRequest(BaseModel):
+    values: dict[str, str] = Field(default_factory=dict)
+    selected_item_ids: list[str] | None = None
+    regenerate: bool = False
+
+
 class ManualVersionRequest(BaseModel):
     title: str
     markdown: str
@@ -82,9 +108,30 @@ class SelectVersionRequest(BaseModel):
     version_id: str
 
 
+class ChapterVersionReviewRequest(BaseModel):
+    note: str = ""
+
+
 class AIEditProposalRequest(BaseModel):
     suggestion: str
     base_markdown: str | None = None
+
+
+class ChapterGenerationPlanRequest(BaseModel):
+    version: int = 1
+    status: str = "draft"
+    scope_statement: str
+    items: list[dict] = Field(default_factory=list)
+    out_of_scope: list[str] = Field(default_factory=list)
+    fact_boundaries: list[str] = Field(default_factory=list)
+    manual_inputs: list[str] = Field(default_factory=list)
+    user_notes: str = ""
+    source: str = "user"
+    fingerprint: str = ""
+
+
+class ChapterPlanAIProposalRequest(BaseModel):
+    suggestion: str
 
 
 class RevisionActionRequest(BaseModel):

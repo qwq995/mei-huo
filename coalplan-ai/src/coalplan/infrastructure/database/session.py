@@ -61,6 +61,16 @@ def _ensure_lightweight_sqlite_migrations(engine) -> None:
         if "run_id" not in finding_columns:
             with engine.begin() as connection:
                 connection.execute(text("ALTER TABLE compliance_findings ADD COLUMN run_id TEXT NOT NULL DEFAULT ''"))
+    if "project_memories" in inspector.get_table_names():
+        memory_columns = {column["name"] for column in inspector.get_columns("project_memories")}
+        if "source_supplement_id" not in memory_columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE project_memories ADD COLUMN source_supplement_id TEXT"))
+    if "generation_jobs" in inspector.get_table_names():
+        job_columns = {column["name"] for column in inspector.get_columns("generation_jobs")}
+        if "pause_requested" not in job_columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE generation_jobs ADD COLUMN pause_requested INTEGER NOT NULL DEFAULT 0"))
 
 
 def _ensure_standard_search_indexes(engine) -> None:

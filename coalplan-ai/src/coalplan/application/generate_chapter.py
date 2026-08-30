@@ -17,6 +17,7 @@ from coalplan.ports.llm import LLMClient
 from coalplan.ports.repository import ArtifactRepository
 
 from .chapter_writing_guidance import guidance_for_node, render_writing_guidance
+from .chapter_generation_plan import render_chapter_plan_for_prompt
 from .chapter_writing_skill import ChapterWritingSkill, render_chapter_writing_skill
 from .chapter_skill_library import render_chapter_skills_for_prompt
 from .chapter_writing_units import ChapterWritingUnitContext, compact_completed_unit
@@ -271,6 +272,9 @@ def _evidence_audit_requires_revision(audit: EvidenceUtilizationAudit | None) ->
 def _metadata_audit_requires_revision(audit: dict | None) -> bool:
     if not audit:
         return False
+    plan_audit = audit.get("generation_plan_audit") or {}
+    if plan_audit.get("suggested_action") == "regenerate":
+        return True
     card_audits = audit.get("prompt_card_audits") or []
     if not card_audits:
         return False
@@ -367,6 +371,8 @@ def build_writing_unit_prompt(
     writing_skill: ChapterWritingSkill | None = None,
 ) -> str:
     guidance = guidance_for_node(node)
+    generation_plan = (node.chapter_summary or {}).get("generation_plan")
+    plan_confirmed = isinstance(generation_plan, dict) and generation_plan.get("status") == "confirmed"
     scoped_facts = extract_required_source_facts(context.evidence_spans, max_facts=12, max_per_evidence=3)
     facts_text = "\n".join(
         (
@@ -386,6 +392,9 @@ def build_writing_unit_prompt(
             f"目标字数：约 {context.spec.target_word_count} 字",
             f"写作主题：{'；'.join(context.spec.writing_topics)}",
             f"内容功能：{'；'.join(context.spec.content_functions)}",
+            "",
+            "## 已确认章节提纲（最高优先级范围约束）",
+            render_chapter_plan_for_prompt(generation_plan) if generation_plan else "本章暂无结构化提纲，按章节标题和来源组织正文。",
             "",
             "## 全局与已生成章节滚动概括",
             global_context or "尚无已生成章节的滚动概括。",
@@ -415,14 +424,22 @@ def build_writing_unit_prompt(
             render_reference_atoms_for_prompt(context.reference_atom_results),
             "",
             "## 三源输入三：写作组织技巧（仅控制结构与表达）",
-            render_writing_guidance(guidance),
+            "已确认章节提纲接管结构控制，旧写作技巧不参与本次生成。" if plan_confirmed else render_writing_guidance(guidance),
             "",
             "## 当前章节 AI Writing Skill（优先执行）",
-            render_chapter_writing_skill(writing_skill) if writing_skill else "未生成 AI Skill，使用基础章节写作规则。",
+            (
+                "已确认章节提纲接管结构控制，旧 AI Writing Skill 不参与本次生成。"
+                if plan_confirmed
+                else render_chapter_writing_skill(writing_skill) if writing_skill else "未生成 AI Skill，使用基础章节写作规则。"
+            ),
             "",
-            render_pattern_matches_for_prompt(_node_pattern_text(node), primary_key=guidance.pattern_key) or "无本地模式规则。",
+            (
+                "已确认章节提纲接管结构控制，旧模式规则不参与本次生成。"
+                if plan_confirmed
+                else render_pattern_matches_for_prompt(_node_pattern_text(node), primary_key=guidance.pattern_key) or "无本地模式规则。"
+            ),
             "",
-            render_chapter_skills_for_prompt(node),
+            "已确认章节提纲接管结构控制。" if plan_confirmed else render_chapter_skills_for_prompt(node),
             "",
             "## 生成控制策略",
             _render_generation_policy(generation_policy),
@@ -432,6 +449,8 @@ def build_writing_unit_prompt(
             "",
             "输出规则：",
             f"- 只输出 `### {context.spec.title}` 及其正文，不得输出整章标题、主要来源摘要、人工补充等整章模块。",
+            "- 已确认章节提纲是最高优先级：不得写入明确排除的主题；来源、原子、旧技巧或历史上下文与提纲冲突时一律忽略冲突内容。",
+            "- 影响分析章只说明条件、影响对象、影响方向和资料缺口；除非当前提纲明确要求，不展开完整施工方法、组织体系、应急预案或成套控制参数。",
             "- 当前项目名称、范围、工程量、参数、日期、规范和结论，只能来自“三源输入一”或用户明确补充。",
             "- 管理主体、审批机关、许可手续、库房设置、人员资质、检查频次和验收责任也属于项目事实；投标证据未明确时不得自行补写。",
             "- 优秀原子只借鉴工艺步骤、控制维度、检查闭环和专业表达；不得迁移其中的数值、地名、工程量、设备数量、日期或规范版本。",
@@ -764,32 +783,38 @@ def build_generation_metadata(
     writing_skill: ChapterWritingSkill | None = None,
 ) -> dict:
     guidance = guidance_for_node(node)
+    generation_plan = (node.chapter_summary or {}).get("generation_plan")
+    plan_confirmed = isinstance(generation_plan, dict) and generation_plan.get("status") == "confirmed"
     pattern_text = _node_pattern_text(node)
-    local_matches = match_patterns_for_text(pattern_text, limit=3)
-    skill_pattern_key = _skill_pattern_key(node)
+    local_matches = [] if plan_confirmed else match_patterns_for_text(pattern_text, limit=3)
+    skill_pattern_key = None if plan_confirmed else _skill_pattern_key(node)
     if skill_pattern_key:
         local_matches = [match for match in local_matches if match.pattern_key == skill_pattern_key]
     selected_pattern_keys: list[str] = []
-    if skill_pattern_key:
+    if plan_confirmed:
+        selected_pattern_keys = []
+    elif skill_pattern_key:
         selected_pattern_keys.append(skill_pattern_key)
     elif guidance.pattern_key:
         selected_pattern_keys.append(guidance.pattern_key)
-    selected_pattern_keys.extend(match.pattern_key for match in local_matches)
-    if not skill_pattern_key and generation_policy and generation_policy.writing_pattern_matches:
-        selected_pattern_keys.extend(generation_policy.writing_pattern_matches)
+    if not plan_confirmed:
+        selected_pattern_keys.extend(match.pattern_key for match in local_matches)
+        if not skill_pattern_key and generation_policy and generation_policy.writing_pattern_matches:
+            selected_pattern_keys.extend(generation_policy.writing_pattern_matches)
     selected_pattern_keys = list(dict.fromkeys(selected_pattern_keys))
     return {
         "node_id": node.id,
         "title": node.title,
         "target_word_count": task.target_word_count,
         "source_section_ids": [match.section_id for match in task.source_matches],
-        "writing_guidance": dump_model(guidance),
+        "writing_guidance": None if plan_confirmed else dump_model(guidance),
         "chapter_writing_skill": dump_model(writing_skill) if writing_skill else None,
         "local_pattern_matches": [dump_model(match) for match in local_matches],
         "selected_pattern_keys": selected_pattern_keys,
         "generation_policy": dump_model(generation_policy) if generation_policy else None,
-        "matched_skill_keys": node.matched_skill_keys,
+        "matched_skill_keys": [] if plan_confirmed else node.matched_skill_keys,
         "chapter_summary": node.chapter_summary,
+        "generation_plan": (node.chapter_summary or {}).get("generation_plan"),
         "reference_atoms": [
             {
                 "atom_id": result.atom_id,
@@ -828,6 +853,20 @@ def _specialize_generation_policy(
     node: TemplateNode,
     policy: ChapterGenerationPolicy | None,
 ) -> ChapterGenerationPolicy | None:
+    generation_plan = (node.chapter_summary or {}).get("generation_plan")
+    if isinstance(generation_plan, dict) and generation_plan.get("status") == "confirmed":
+        if policy is None:
+            return None
+        return policy.model_copy(
+            update={
+                "writing_pattern_key": None,
+                "writing_pattern_matches": [],
+                "pattern_required_source_facts": [],
+                "pattern_human_only_items": [],
+                "pattern_prompt_cards": [],
+            },
+            deep=True,
+        )
     pattern_key = _skill_pattern_key(node)
     if policy is None or not pattern_key:
         return policy

@@ -136,6 +136,8 @@ def audit_evidence_utilization(
     required_fact_hints: Iterable[str] | None = None,
 ) -> EvidenceUtilizationAudit:
     spans = list(evidence or [])
+    saved_plan = (node.chapter_summary or {}).get("generation_plan")
+    plan_controls_scope = isinstance(saved_plan, dict) and saved_plan.get("status") == "confirmed"
     audit_spans = _applicable_spans_for_node(node, spans)
     body_markdown = _heading_block(markdown, "生成正文") or markdown
     manual_markdown = _heading_block(markdown, "人工补充需补充")
@@ -171,7 +173,7 @@ def audit_evidence_utilization(
     coverage_ratio = round(len(used_ids) / len(audit_spans), 3) if audit_spans else None
 
     issues: list[EvidenceUtilizationIssue] = []
-    if omitted_fact_ids:
+    if omitted_fact_ids and not plan_controls_scope:
         omitted = [fact for fact in required_facts if fact.fact_id in omitted_fact_ids]
         issues.append(
             EvidenceUtilizationIssue(
@@ -204,6 +206,8 @@ def audit_evidence_utilization(
             )
         )
     if (
+        not plan_controls_scope
+        and
         audit_spans
         and coverage_ratio is not None
         and coverage_ratio < 0.35

@@ -13,7 +13,7 @@
 | 严格控制 LLM 输出格式 | `MarkdownContractValidator` 要求固定标题和模块，拒绝 JSON、缺来源、缺人工占位、疑似编造参数 | `tests/unit/test_output_contract.py` |
 | 生成失败时避免流程错误 | 生成前必须存在投标章节；校验失败先修复，仍失败则 task failed；合并前检查所有 task passed | `test_generation_requires_bid_markdown_sections`；`merge_chapters.py` |
 | 全部小章节完成后合并 | `merge_template_tree_markdowns` 按模板树顺序输出父级标题和小节正文 | `test_end_to_end_generation_and_merge` |
-| 简要前端展示 | `web/src/App.tsx` 三栏展示项目输入、模板树、来源片段、单章结果、日志和合并结果 | `npm run build` |
+| 简要前端展示 | `web1.0/src/App.tsx` 五步工作台展示项目、资料、目录、章节和成稿，并提供任务中心与依据查看 | `npm run build` |
 | 模块化 Python 大型工程结构 | `domain/application/ports/infrastructure/interfaces` 分层；FastAPI 与 LLM/存储/检索解耦 | `docs/phase1_architecture.md` |
 | 后续模板复用、低耦合 | 模板加载、检索、LLM、存储均通过 ports 注入；火区模板只是 `template_id=coal_fire` 的资产 | `GenerationPipeline.__init__`；`ports/*.py` |
 

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react"
-import { ArrowDown, ArrowRight, ArrowUp, Calculator, ChevronRight, CornerDownLeft, CornerUpLeft, Download, ListTree, Plus, RefreshCw, RotateCcw, Save, Search, Sparkles, Trash2, Wand2 } from "lucide-react"
+import { useEffect, useMemo, useState, type ReactNode } from "react"
+import { ArrowDown, ArrowRight, ArrowUp, Calculator, ChevronRight, CornerDownLeft, CornerUpLeft, Download, ListTree, Pencil, Plus, RefreshCw, RotateCcw, Save, Search, Sparkles, Trash2, Wand2, X } from "lucide-react"
 import {
   applyOutlineProposal,
   createOutlineNode,
@@ -24,6 +24,7 @@ import { useJobs } from "@/components/Jobs"
 
 type TreeNode = OutlineNode & { _children: TreeNode[] }
 type RefineMode = "balanced" | "conservative" | "aggressive"
+type NodeAction = { kind: "edit" | "children" | "delete"; node: OutlineNode }
 
 function buildTree(nodes: OutlineNode[]): TreeNode[] {
   const map = new Map<string, TreeNode>()
@@ -57,6 +58,11 @@ function countTreeNodes(nodes: TreeNode[]): number {
   return nodes.reduce((count, node) => count + 1 + countTreeNodes(node._children), 0)
 }
 
+function firstLeafNode(nodes: OutlineNode[]): OutlineNode | undefined {
+  const parentIds = new Set(nodes.map((node) => node.parent_id).filter(Boolean))
+  return nodes.find((node) => node.enabled !== false && !parentIds.has(node.node_id))
+}
+
 function splitLines(value: string): string[] {
   return value
     .split("\n")
@@ -82,6 +88,9 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
   const [sourceOnly, setSourceOnly] = useState(false)
   const [missingOnly, setMissingOnly] = useState(false)
   const [viewMode, setViewMode] = useState<"tree" | "overview">("tree")
+  const [detailMode, setDetailMode] = useState<"edit" | "ai">("edit")
+  const [treeExpandMode, setTreeExpandMode] = useState<"open" | "closed" | null>(null)
+  const [nodeAction, setNodeAction] = useState<NodeAction | null>(null)
 
   const tree = useMemo(() => buildTree(outline.data ?? []), [outline.data])
   const visibleTree = useMemo(() => filterTree(tree, treeSearch, enabledOnly, sourceOnly, missingOnly), [tree, treeSearch, enabledOnly, sourceOnly, missingOnly])
@@ -113,7 +122,7 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
     : { label: "先生成项目目录", detail: "系统会结合模板、投标目录和项目概况创建可编辑目录" }
 
   useEffect(() => {
-    if (!selectedId && outline.data?.length) setSelectedId(outline.data.find((node) => node.enabled !== false)?.node_id ?? outline.data[0].node_id)
+    if (!selectedId && outline.data?.length) setSelectedId(firstLeafNode(outline.data)?.node_id ?? outline.data.find((node) => node.enabled !== false)?.node_id ?? outline.data[0].node_id)
   }, [outline.data, selectedId])
 
   useEffect(() => {
@@ -145,7 +154,19 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
 
   const requestSelection = (nodeId: string) => {
     if (editorDirty && nodeId !== selectedId) setPendingSelection(nodeId)
-    else setSelectedId(nodeId)
+    else {
+      setSelectedId(nodeId)
+      setDetailMode("edit")
+    }
+  }
+
+  const openNodeAction = (kind: NodeAction["kind"], node: OutlineNode) => {
+    if (editorDirty && node.node_id !== selectedId) {
+      setPendingSelection(node.node_id)
+      return
+    }
+    setSelectedId(node.node_id)
+    setNodeAction({ kind, node })
   }
 
   const handleEstimate = async () => {
@@ -209,7 +230,7 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
           </Button>
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-6">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-[var(--radius)] border border-border bg-card px-3 py-2 text-[11px]">
         {[
           ["目录节点", outlineStats.total, "全部目录结构"],
           ["已启用", outlineStats.enabled, "参与后续生成"],
@@ -217,27 +238,15 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
           ["有依据", outlineStats.sourced, "已关联投标资料"],
           ["已设字数", outlineStats.targets, "可控制篇幅"],
           ["待补信息", outlineStats.missing, "生成前需人工确认"],
-        ].map(([label, value, hint]) => <div key={label} className="rounded-[var(--radius)] border border-border bg-card px-3 py-2.5"><p className="text-[11px] text-muted-foreground">{label}</p><p className="mt-0.5 text-lg font-semibold text-foreground">{value}</p><p className="text-[10px] text-muted-foreground">{hint}</p></div>)}
+        ].map(([label, value, hint]) => <span key={label} title={String(hint)} className="inline-flex items-center gap-1.5 text-muted-foreground"><span>{label}</span><strong className="text-sm text-foreground">{value}</strong></span>)}
       </div>
       {editorDirty ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius)] border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900"><span>当前节点有未保存修改，切换节点或重新生成前请先保存。</span><span className="font-medium">未保存</span></div> : null}
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.25fr)_minmax(420px,0.9fr)] lg:items-start">
       <Card className="flex min-w-0 flex-col p-5">
         <SectionTitle
           title="目录树"
-          description="目录是后续逐章来源映射与正文生成的骨架。先生成，再精修、补字数和人工调整。"
-          right={
-            <div className="flex flex-wrap items-center gap-2">
-              <Button variant="ghost" size="sm" onClick={() => outline.reload()} icon={<RefreshCw className="h-3.5 w-3.5" />}>
-                刷新
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => void handleDownloadOverview()} icon={<Download className="h-3.5 w-3.5" />}>
-                下载纲要
-              </Button>
-              <Button size="sm" onClick={requestGenerate} loading={generating || activeJob?.job_type === "directory_generation"} icon={<Wand2 className="h-3.5 w-3.5" />}>
-                {outline.data?.length ? "重新生成" : "生成目录"}
-              </Button>
-            </div>
-          }
+          description="选择一个节点，右侧只处理当前节点的编辑或 AI 优化。"
+          right={<div className="flex items-center gap-1"><Button variant="ghost" size="icon" onClick={() => outline.reload()} aria-label="刷新目录"><RefreshCw className="h-3.5 w-3.5" /></Button><Button variant="ghost" size="icon" onClick={() => void handleDownloadOverview()} aria-label="下载目录纲要"><Download className="h-3.5 w-3.5" /></Button></div>}
         />
         <div className="mt-4 flex-1">
           {outline.loading ? (
@@ -270,11 +279,12 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
                   <label className="flex items-center gap-1.5"><input type="checkbox" checked={missingOnly} onChange={(e) => setMissingOnly(e.target.checked)} className="accent-[var(--color-primary)]" />仅看待补</label>
                   <span>显示 {countTreeNodes(visibleTree)} / {outline.data.length} 个节点</span>
                 </div>
+                {viewMode === "tree" ? <div className="flex items-center gap-2 text-[11px]"><button type="button" onClick={() => setTreeExpandMode("open")} className="text-primary hover:underline">展开全部</button><span className="text-border">|</span><button type="button" onClick={() => setTreeExpandMode("closed")} className="text-primary hover:underline">收起全部</button><span className="ml-auto text-muted-foreground">点击标题或编辑图标，右侧编辑</span></div> : null}
               </div>
               {viewMode === "tree" ? (
                 <ul className="max-h-[min(62vh,720px)] overflow-y-auto overscroll-contain pr-1 flex flex-col gap-1">
                   {visibleTree.map((node) => (
-                    <OutlineRow key={node.node_id} node={node} selectedId={selectedId} onSelect={requestSelection} />
+                    <OutlineRow key={node.node_id} node={node} selectedId={selectedId} onSelect={requestSelection} onAction={openNodeAction} expandMode={treeExpandMode} />
                   ))}
                 </ul>
               ) : <OutlineOverview nodes={outline.data ?? []} query={treeSearch} enabledOnly={enabledOnly} sourceOnly={sourceOnly} missingOnly={missingOnly} onSelect={requestSelection} />}
@@ -284,9 +294,15 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
       </Card>
 
       <div className="flex min-w-0 flex-col gap-5 lg:sticky lg:top-24">
-        {selected ? <OutlineNodeSummary node={selected} nextMissing={nextMissing} onSelectNext={nextMissing ? requestSelection : undefined} /> : null}
-        <AIOutlinePanel projectId={project.project_id} scopeNode={selected} onApplied={() => outline.reload()} />
-        <NodeEditor
+        <div className="flex items-center gap-2 text-[11px] text-muted-foreground"><span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[10px] text-primary-foreground">2</span><span className="font-medium text-foreground">处理当前节点</span><ChevronRight className="h-3 w-3" /><span>保存目录或提交 AI 方案</span></div>
+        {selected ? <OutlineNodeSummary node={selected} nextMissing={nextMissing} onSelectNext={nextMissing ? requestSelection : undefined} onOpenAi={() => setDetailMode("ai")} /> : null}
+        <div className="rounded-[var(--radius)] border border-border bg-card p-1">
+          <div className="grid grid-cols-2 gap-1">
+            <button type="button" onClick={() => setDetailMode("edit")} className={cn("rounded px-3 py-2 text-xs font-medium", detailMode === "edit" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted")}>编辑当前节点</button>
+            <button type="button" onClick={() => setDetailMode("ai")} className={cn("rounded px-3 py-2 text-xs font-medium", detailMode === "ai" ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-muted")}>AI 优化目录</button>
+          </div>
+        </div>
+        {detailMode === "ai" ? <AIOutlinePanel projectId={project.project_id} scopeNode={selected} currentNodes={outline.data ?? []} onApplied={() => outline.reload()} /> : <NodeEditor
           key={selected?.node_id ?? "none"}
           projectId={project.project_id}
           node={selected}
@@ -302,7 +318,7 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
             outline.reload()
           }}
           onMoved={() => outline.reload()}
-        />
+        />}
         <Card className="p-5">
           <p className="text-sm font-medium text-foreground">目录确认完成</p>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">确认结构、字数和四模块后进入章节工作台。父节点可作为容器，主要生成叶子节点。</p>
@@ -317,7 +333,7 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
         description="当前节点还有未保存内容。继续切换会丢弃这些修改。"
         confirmLabel="放弃并切换"
         onClose={() => setPendingSelection(null)}
-        onConfirm={() => { setSelectedId(pendingSelection); setPendingSelection(null); setEditorDirty(false) }}
+        onConfirm={() => { setSelectedId(pendingSelection); setDetailMode("edit"); setPendingSelection(null); setEditorDirty(false) }}
       />
       <ConfirmDialog
         open={confirmRegenerate}
@@ -329,13 +345,31 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
         onClose={() => setConfirmRegenerate(false)}
         onConfirm={() => void handleGenerate()}
       />
+      {nodeAction?.kind === "edit" ? <MiniDialog title={`编辑节点：${nodeAction.node.title || "未命名节点"}`} onClose={() => setNodeAction(null)}>
+        <NodeEditor
+          projectId={project.project_id}
+          node={nodeAction.node}
+          nodeCount={outline.data?.length ?? 0}
+          onDirtyChange={setEditorDirty}
+          onSaved={() => { setNodeAction(null); outline.reload() }}
+          onDeleted={() => { setNodeAction(null); setSelectedId(null); outline.reload() }}
+          onCreated={(nodeId) => { setSelectedId(nodeId); outline.reload() }}
+          onMoved={() => outline.reload()}
+          onRequestDelete={() => setNodeAction({ kind: "delete", node: nodeAction.node })}
+        />
+      </MiniDialog> : null}
+      {nodeAction?.kind === "children" ? <ChildNodesDialog projectId={project.project_id} parent={nodeAction.node} childCount={tree.find((item) => item.node_id === nodeAction.node.node_id)?._children.length ?? 0} onClose={() => setNodeAction(null)} onChanged={() => { setNodeAction(null); outline.reload() }} /> : null}
+      {nodeAction?.kind === "delete" ? <DeleteNodeDialog projectId={project.project_id} node={nodeAction.node} childCount={tree.find((item) => item.node_id === nodeAction.node.node_id)?._children.length ?? 0} onClose={() => setNodeAction(null)} onDeleted={() => { setNodeAction(null); setSelectedId(null); outline.reload() }} /> : null}
       </div>
     </div>
   )
 }
 
-function OutlineRow({ node, selectedId, onSelect }: { node: TreeNode; selectedId: string | null; onSelect: (id: string) => void }) {
+function OutlineRow({ node, selectedId, onSelect, onAction, expandMode }: { node: TreeNode; selectedId: string | null; onSelect: (id: string) => void; onAction: (kind: NodeAction["kind"], node: OutlineNode) => void; expandMode: "open" | "closed" | null }) {
   const [open, setOpen] = useState((node.level ?? 1) <= 1)
+  useEffect(() => {
+    if (expandMode) setOpen(expandMode === "open")
+  }, [expandMode])
   const hasChildren = node._children.length > 0
   const isSelected = node.node_id === selectedId
   const disabled = node.enabled === false
@@ -355,11 +389,6 @@ function OutlineRow({ node, selectedId, onSelect }: { node: TreeNode; selectedId
         <button onClick={() => onSelect(node.node_id)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
           <span className="min-w-0 flex-1">
             <span className={cn("block truncate text-sm", disabled ? "text-muted-foreground/60 line-through" : "text-foreground")}>{node.title || "未命名章节"}</span>
-            {node.chapter_summary?.generated_overview || node.chapter_summary?.overview ? (
-              <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-                {node.chapter_summary.generated_overview || node.chapter_summary.overview}
-              </span>
-            ) : null}
           </span>
           {node.chapter_summary?.coverage_status ? (
             <Badge tone={node.chapter_summary.coverage_status === "grounded" ? "success" : node.chapter_summary.coverage_status === "aggregate" ? "info" : "warning"} className="shrink-0">
@@ -372,11 +401,26 @@ function OutlineRow({ node, selectedId, onSelect }: { node: TreeNode; selectedId
           {node.target_word_count ? <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">{node.target_word_count} 字</span> : null}
           {hasChildren ? <span className="shrink-0 text-[10px] text-muted-foreground">{node._children.length} 节</span> : null}
         </button>
+        <button
+          type="button"
+          onClick={() => onSelect(node.node_id)}
+          className="shrink-0 rounded p-1.5 text-muted-foreground opacity-0 transition-opacity hover:bg-primary/10 hover:text-primary group-hover:opacity-100 focus-visible:opacity-100"
+          aria-label={`编辑${node.title || "节点"}`}
+          title="编辑节点"
+        >
+          <Pencil className="h-3.5 w-3.5" />
+        </button>
       </div>
+      {isSelected ? <div className="flex flex-wrap items-center gap-1 border-x border-b border-primary/20 bg-primary/[0.03] px-8 py-1.5" role="toolbar" aria-label="节点操作">
+        <span className="mr-1 text-[10px] text-muted-foreground">当前节点操作：</span>
+        <button type="button" onClick={() => onAction("edit", node)} className="rounded px-2 py-1 text-[11px] text-muted-foreground hover:bg-primary/10 hover:text-primary">编辑</button>
+        <button type="button" onClick={() => onAction("children", node)} className="rounded px-2 py-1 text-[11px] text-muted-foreground hover:bg-primary/10 hover:text-primary">生成子节点</button>
+        <button type="button" onClick={() => onAction("delete", node)} className="rounded px-2 py-1 text-[11px] text-muted-foreground hover:bg-red-50 hover:text-red-700">删除节点</button>
+      </div> : null}
       {hasChildren && open ? (
         <ul className="flex flex-col gap-1">
           {node._children.map((child) => (
-            <OutlineRow key={child.node_id} node={child} selectedId={selectedId} onSelect={onSelect} />
+            <OutlineRow key={child.node_id} node={child} selectedId={selectedId} onSelect={onSelect} onAction={onAction} expandMode={expandMode} />
           ))}
         </ul>
       ) : null}
@@ -419,13 +463,12 @@ function OutlineOverview({ nodes, query, enabledOnly, sourceOnly, missingOnly, o
   )
 }
 
-function OutlineNodeSummary({ node, nextMissing, onSelectNext }: { node: OutlineNode; nextMissing: OutlineNode | null; onSelectNext?: (id: string) => void }) {
+function OutlineNodeSummary({ node, nextMissing, onSelectNext, onOpenAi }: { node: OutlineNode; nextMissing: OutlineNode | null; onSelectNext?: (id: string) => void; onOpenAi?: () => void }) {
   const summary = node.chapter_summary
-  if (!summary) return null
-  const hints = summary.writing_unit_hints ?? []
-  const unresolved = summary.unresolved_items ?? []
-  const missing = summary.missing_information ?? []
-  const sourceBasis = summary.source_basis ?? []
+  const hints = summary?.writing_unit_hints ?? []
+  const unresolved = summary?.unresolved_items ?? []
+  const missing = summary?.missing_information ?? []
+  const sourceBasis = summary?.source_basis ?? []
   return (
     <div className="border-y border-border bg-muted/25 px-4 py-3">
       <div className="flex items-center justify-between gap-3">
@@ -434,16 +477,25 @@ function OutlineNodeSummary({ node, nextMissing, onSelectNext }: { node: Outline
           <p className="mt-0.5 text-[11px] text-muted-foreground">本章生成概括 · 层级 {node.level ?? 1}</p>
         </div>
         <span className={cn("shrink-0 rounded-full px-2 py-1 text-[11px]", node.readiness === "ready" ? "bg-emerald-100 text-emerald-800" : node.readiness === "needs_confirmation" ? "bg-amber-100 text-amber-800" : "bg-muted text-muted-foreground")}>
-          {summary.generation_role === "container" ? "仅作目录容器" : "可生成章节"}
+          {summary?.generation_role === "container" ? "仅作目录容器" : node.readiness === "needs_confirmation" ? "待确认后生成" : "可生成章节"}
         </span>
       </div>
       <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-        {summary.generated_overview || summary.overview || "尚无概括，生成目录后系统会说明本章范围与依据。"}
+        {summary?.generated_overview || summary?.overview || "尚无章节纲要，可先让 AI 生成一份待审阅方案。"}
       </p>
-      {hints.length ? <p className="mt-2 text-[11px] text-muted-foreground">建议展开：{hints.slice(0, 5).join(" · ")}</p> : null}
-      {sourceBasis.length ? <p className="mt-1 text-[11px] text-muted-foreground">依据：{sourceBasis.slice(0, 3).join(" · ")}</p> : null}
-      {missing.length ? <p className="mt-1 text-[11px] text-[var(--color-warning)]">待补资料：{missing.slice(0, 3).join(" · ")}</p> : null}
-      {unresolved.length ? <p className="mt-1 text-[11px] text-[var(--color-warning)]">待确认：{unresolved.slice(0, 3).join(" · ")}</p> : null}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {onOpenAi ? <Button size="sm" variant="accent" onClick={onOpenAi} icon={<Sparkles className="h-3.5 w-3.5" />}>
+          生成本章纲要
+        </Button> : null}
+        <span className="text-[11px] text-muted-foreground">AI 只生成待审阅方案，不会直接覆盖当前目录</span>
+      </div>
+      {(hints.length || sourceBasis.length || missing.length || unresolved.length) ? <details className="mt-2 rounded border border-border/70 bg-background/30 px-2.5 py-2 text-[11px]">
+        <summary className="cursor-pointer select-none text-muted-foreground">查看本章依据与待处理项</summary>
+        {hints.length ? <p className="mt-2 text-muted-foreground">建议展开：{hints.slice(0, 5).join(" · ")}</p> : null}
+        {sourceBasis.length ? <p className="mt-1 text-muted-foreground">依据：{sourceBasis.slice(0, 3).join(" · ")}</p> : null}
+        {missing.length ? <p className="mt-1 text-[var(--color-warning)]">待补资料：{missing.slice(0, 3).join(" · ")}</p> : null}
+        {unresolved.length ? <p className="mt-1 text-[var(--color-warning)]">待确认：{unresolved.slice(0, 3).join(" · ")}</p> : null}
+      </details> : null}
       {nextMissing && onSelectNext ? <Button size="sm" variant="ghost" className="mt-2 px-0 text-xs text-primary" onClick={() => onSelectNext(nextMissing.node_id)}>
         处理下一个待确认节点：{nextMissing.title}
       </Button> : null}
@@ -460,6 +512,7 @@ function NodeEditor({
   onCreated,
   onMoved,
   onDirtyChange,
+  onRequestDelete,
 }: {
   projectId: string
   node: OutlineNode | null
@@ -469,6 +522,7 @@ function NodeEditor({
   onCreated: (nodeId: string) => void
   onMoved: () => void
   onDirtyChange: (dirty: boolean) => void
+  onRequestDelete?: () => void
 }) {
   const toast = useToast()
   const [title, setTitle] = useState(node?.title ?? "")
@@ -593,15 +647,20 @@ function NodeEditor({
                 启用
               </label>
             </div>
-            <ModuleText label="[主要来源]" value={sourceRules} onChange={setSourceRules} />
-            <ModuleText label="[自动补充]" value={autoFill} onChange={setAutoFill} />
-            <ModuleText label="[人工补充需补充]" value={manualFill} onChange={setManualFill} />
-            <ModuleText label="[特殊备注]" value={specialNotes} onChange={setSpecialNotes} rows={2} />
+            <details className="rounded-[var(--radius)] border border-border bg-background/30 px-3 py-2">
+              <summary className="cursor-pointer select-none text-xs font-medium text-foreground">生成内容设置 <span className="ml-1 text-[10px] font-normal text-muted-foreground">来源、自动补充、人工待确认</span></summary>
+              <div className="mt-3 flex flex-col gap-4">
+                <ModuleText label="[主要来源]" value={sourceRules} onChange={setSourceRules} />
+                <ModuleText label="[自动补充]" value={autoFill} onChange={setAutoFill} />
+                <ModuleText label="[人工补充需补充]" value={manualFill} onChange={setManualFill} />
+                <ModuleText label="[特殊备注]" value={specialNotes} onChange={setSpecialNotes} rows={2} />
+              </div>
+            </details>
             <div className="flex items-center gap-2">
               <Button onClick={save} loading={saving} icon={<Save className="h-4 w-4" />} className="flex-1">
                 保存修改
               </Button>
-              <Button variant="danger" onClick={() => setConfirmDelete(true)} loading={deleting} icon={<Trash2 className="h-4 w-4" />}>
+              <Button variant="danger" onClick={() => onRequestDelete ? onRequestDelete() : setConfirmDelete(true)} loading={deleting} icon={<Trash2 className="h-4 w-4" />}>
                 删除
               </Button>
             </div>
@@ -640,6 +699,144 @@ function NodeEditor({
   )
 }
 
+function MiniDialog({ title, description, onClose, children }: { title: string; description?: string; onClose: () => void; children: ReactNode }) {
+  return (
+    <div className="fixed inset-0 z-[65] flex items-center justify-center bg-black/35 p-4" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="flex max-h-[min(88vh,860px)] w-full max-w-2xl flex-col overflow-hidden rounded-[var(--radius)] border border-border bg-background shadow-2xl" role="dialog" aria-modal="true" aria-label={title}>
+        <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
+          <div className="min-w-0"><h2 className="text-base font-semibold text-foreground">{title}</h2>{description ? <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{description}</p> : null}</div>
+          <Button size="icon" variant="ghost" onClick={onClose} aria-label="关闭窗口"><X className="h-4 w-4" /></Button>
+        </div>
+        <div className="min-h-0 overflow-y-auto p-5">{children}</div>
+      </div>
+    </div>
+  )
+}
+
+function ChildNodesDialog({ projectId, parent, childCount, onClose, onChanged }: { projectId: string; parent: OutlineNode; childCount: number; onClose: () => void; onChanged: () => void }) {
+  const toast = useToast()
+  const { startJob, activeJob } = useJobs()
+  const [manualTitles, setManualTitles] = useState("")
+  const [prompt, setPrompt] = useState("")
+  const [creating, setCreating] = useState(false)
+  const [proposal, setProposal] = useState<AIProposal | null>(null)
+  const [excludedNodeIds, setExcludedNodeIds] = useState<string[]>([])
+  const aiLoading = activeJob?.job_type === "outline_proposal" && String(activeJob.payload.scope_node_id ?? "") === parent.node_id
+
+  useEffect(() => {
+    const finished = (event: Event) => {
+      const job = (event as CustomEvent).detail
+      if (job?.project_id === projectId && job?.job_type === "outline_proposal" && String(job?.payload?.scope_node_id ?? "") === parent.node_id && job?.status === "completed") {
+        setProposal(job.result as AIProposal)
+        setExcludedNodeIds([])
+      }
+    }
+    window.addEventListener("coalplan:job-finished", finished)
+    return () => window.removeEventListener("coalplan:job-finished", finished)
+  }, [parent.node_id, projectId])
+
+  const createManual = async () => {
+    const titles = splitLines(manualTitles)
+    if (!titles.length) {
+      toast.error("请先逐行填写要新增的子节点标题")
+      return
+    }
+    setCreating(true)
+    try {
+      for (const [index, title] of titles.entries()) {
+        await createOutlineNode(projectId, { title, parent_id: parent.node_id, level: (parent.level ?? 1) + 1, sort_order: childCount + index + 1, enabled: true, source_rules: [], auto_fill: [], manual_fill: [], special_notes: [] })
+      }
+      toast.success(`已新增 ${titles.length} 个子节点`)
+      onChanged()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "新增子节点失败")
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  const generateWithAI = async () => {
+    if (!prompt.trim()) {
+      toast.error("请用一句话说明希望补充什么子结构")
+      return
+    }
+    try {
+      await startJob("outline_proposal", { suggestion: `仅为“${parent.title}”生成子节点，不修改父节点及其他目录。用户要求：${prompt.trim()}`, scope_node_id: parent.node_id, scope_mode: "node", preserve_top_level: true, max_changes: 12, mode: "balanced" })
+      toast.success("子结构建议已开始生成，完成后会在窗口内预览")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "生成子结构失败")
+    }
+  }
+
+  const applyProposal = async () => {
+    if (!proposal) return
+    setCreating(true)
+    try {
+      await applyOutlineProposal(projectId, proposal.id, { exclude_node_ids: excludedNodeIds })
+      toast.success("AI 子结构已应用")
+      onChanged()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "应用子结构失败")
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  return (
+    <MiniDialog title={`生成子节点：${parent.title || "未命名节点"}`} description="可以手动逐行添加，也可以用一句话让 AI 生成候选子结构；AI 结果需要确认后才会写入目录。" onClose={onClose}>
+      <div className="space-y-4">
+        <section className="rounded-[var(--radius)] border border-border bg-card p-3">
+          <p className="text-xs font-semibold text-foreground">方式一：手动添加</p>
+          <p className="mt-1 text-[11px] text-muted-foreground">每行一个标题，适合你已经明确知道目录层级的情况。</p>
+          <TextArea className="mt-3" rows={5} value={manualTitles} onChange={(event) => setManualTitles(event.target.value)} placeholder={"施工准备\n钻孔施工\n灌浆施工\n质量检查"} />
+          <div className="mt-3 flex justify-end"><Button size="sm" onClick={() => void createManual()} loading={creating} icon={<Plus className="h-3.5 w-3.5" />}>直接新增子节点</Button></div>
+        </section>
+        <section className="rounded-[var(--radius)] border border-accent/30 bg-accent/[0.04] p-3">
+          <p className="text-xs font-semibold text-foreground">方式二：AI 生成候选结构</p>
+          <p className="mt-1 text-[11px] text-muted-foreground">只需描述意图，例如“按施工准备、钻孔、灌浆、检查和异常处理展开”。</p>
+          <TextArea className="mt-3" rows={3} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="简短描述希望补充的子结构" />
+          <div className="mt-3 flex justify-end"><Button size="sm" variant="accent" onClick={() => void generateWithAI()} loading={aiLoading} icon={<Sparkles className="h-3.5 w-3.5" />}>让 AI 生成子结构</Button></div>
+          {proposal ? <div className="mt-4 border-t border-border pt-3"><div className="flex items-center justify-between gap-2"><p className="text-xs font-semibold text-accent">AI 候选子结构</p><span className="text-[10px] text-muted-foreground">可逐项取消</span></div><div className="mt-2"><OutlineProposalPreview preview={proposal.preview} excludedNodeIds={excludedNodeIds} onToggle={(nodeId) => setExcludedNodeIds((current) => current.includes(nodeId) ? current.filter((id) => id !== nodeId) : [...current, nodeId])} /></div><div className="mt-3 flex justify-end gap-2"><Button size="sm" variant="outline" onClick={() => setProposal(null)}>重新描述</Button><Button size="sm" variant="accent" onClick={() => void applyProposal()} loading={creating} disabled={!proposalHasChanges(proposal.preview)}>确认加入目录</Button></div></div> : null}
+        </section>
+      </div>
+    </MiniDialog>
+  )
+}
+
+function DeleteNodeDialog({ projectId, node, childCount, onClose, onDeleted }: { projectId: string; node: OutlineNode; childCount: number; onClose: () => void; onDeleted: () => void }) {
+  const toast = useToast()
+  const [deleting, setDeleting] = useState<"node" | "subtree" | null>(null)
+  const remove = async (mode: "node" | "subtree") => {
+    setDeleting(mode)
+    try {
+      await deleteOutlineNode(projectId, node.node_id, mode)
+      toast.success(mode === "node" ? "节点已删除，子节点已提升" : "节点及其子结构已删除")
+      onDeleted()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "删除失败")
+    } finally {
+      setDeleting(null)
+    }
+  }
+  return (
+    <MiniDialog title={`删除节点：${node.title || "未命名节点"}`} description="请选择删除范围。这个操作会改变目录树结构，已有章节版本不会自动并入其他节点。" onClose={onClose}>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <button type="button" onClick={() => void remove("node")} disabled={Boolean(deleting)} className="rounded-[var(--radius)] border border-border bg-card p-4 text-left transition-colors hover:border-primary/50 hover:bg-primary/[0.04] disabled:opacity-60">
+          <p className="text-sm font-semibold text-foreground">仅删除当前节点</p>
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">保留 {childCount} 个直接子节点，并将它们提升到当前节点的父级。</p>
+          {deleting === "node" ? <p className="mt-3 text-[11px] text-primary">正在删除...</p> : null}
+        </button>
+        <button type="button" onClick={() => void remove("subtree")} disabled={Boolean(deleting)} className="rounded-[var(--radius)] border border-red-200 bg-red-50/60 p-4 text-left transition-colors hover:border-red-400 hover:bg-red-50 disabled:opacity-60">
+          <p className="text-sm font-semibold text-red-800">删除整个子结构</p>
+          <p className="mt-2 text-xs leading-relaxed text-red-700/80">删除当前节点及其全部下级目录，适合确认整段结构都不再需要的情况。</p>
+          {deleting === "subtree" ? <p className="mt-3 text-[11px] text-red-700">正在删除...</p> : null}
+        </button>
+      </div>
+      <div className="mt-4 flex justify-end"><Button size="sm" variant="outline" onClick={onClose} disabled={Boolean(deleting)}>暂不删除</Button></div>
+    </MiniDialog>
+  )
+}
+
 function ModuleText({ label, value, onChange, rows = 3 }: { label: string; value: string; onChange: (v: string) => void; rows?: number }) {
   const count = splitLines(value).length
   return (
@@ -650,13 +847,14 @@ function ModuleText({ label, value, onChange, rows = 3 }: { label: string; value
   )
 }
 
-function AIOutlinePanel({ projectId, scopeNode, onApplied }: { projectId: string; scopeNode: OutlineNode | null; onApplied: () => void }) {
+function AIOutlinePanel({ projectId, scopeNode, currentNodes, onApplied }: { projectId: string; scopeNode: OutlineNode | null; currentNodes: OutlineNode[]; onApplied: () => void }) {
   const toast = useToast()
   const { startJob, activeJob } = useJobs()
   const [suggestion, setSuggestion] = useState("")
   const [mode, setMode] = useState<RefineMode>("balanced")
   const [loading, setLoading] = useState(false)
   const [proposal, setProposal] = useState<AIProposal | null>(null)
+  const [proposalHistory, setProposalHistory] = useState<AIProposal[]>([])
   const [applying, setApplying] = useState(false)
   const [rejecting, setRejecting] = useState(false)
   const [scopeMode, setScopeMode] = useState<"node" | "subtree" | "all">(scopeNode ? "subtree" : "all")
@@ -664,9 +862,14 @@ function AIOutlinePanel({ projectId, scopeNode, onApplied }: { projectId: string
   const [maxChanges, setMaxChanges] = useState(20)
   const [excludedNodeIds, setExcludedNodeIds] = useState<string[]>([])
   const [snapshotId, setSnapshotId] = useState<string | null>(null)
+  const [compareOpen, setCompareOpen] = useState(false)
 
   useEffect(() => {
-    void listOutlineProposals(projectId).then((items) => { if (items[0]) setProposal(items[0]) }).catch(() => undefined)
+    void listOutlineProposals(projectId, "all").then((items) => {
+      setProposalHistory(items)
+      const pending = items.find((item) => item.status === "pending")
+      if (pending) setProposal(pending)
+    }).catch(() => undefined)
   }, [projectId])
 
   const proposeRefine = async () => {
@@ -711,7 +914,9 @@ function AIOutlinePanel({ projectId, scopeNode, onApplied }: { projectId: string
     const finished = (event: Event) => {
       const job = (event as CustomEvent).detail
       if (job?.project_id === projectId && ["outline_refine", "outline_proposal"].includes(job?.job_type) && job?.status === "completed") {
-        setProposal(job.result as AIProposal)
+        const nextProposal = job.result as AIProposal
+        setProposal(nextProposal)
+        setProposalHistory((current) => [nextProposal, ...current.filter((item) => item.id !== nextProposal.id)])
         setExcludedNodeIds([])
         setSnapshotId(null)
       }
@@ -726,12 +931,20 @@ function AIOutlinePanel({ projectId, scopeNode, onApplied }: { projectId: string
       toast.error("该方案影响范围过大，请缩小调整要求后重新生成")
       return
     }
+    setCompareOpen(true)
+  }
+
+  const applyConfirmed = async () => {
+    if (!proposal) return
     setApplying(true)
     try {
       const applied = await applyOutlineProposal(projectId, proposal.id, { exclude_node_ids: excludedNodeIds })
+      setCompareOpen(false)
       setSnapshotId(applied.snapshot_id ?? null)
       toast.success("方案已应用")
-      setProposal({ ...proposal, status: "applied", applied_at: new Date().toISOString() })
+      const appliedProposal = { ...proposal, status: "applied", applied_at: new Date().toISOString() }
+      setProposal(appliedProposal)
+      setProposalHistory((current) => current.map((item) => item.id === proposal.id ? appliedProposal : item))
       setSuggestion("")
       onApplied()
     } catch (err) {
@@ -747,6 +960,7 @@ function AIOutlinePanel({ projectId, scopeNode, onApplied }: { projectId: string
     try {
       await rejectOutlineProposal(projectId, proposal.id)
       toast.success("已忽略该目录建议")
+      setProposalHistory((current) => current.map((item) => item.id === proposal.id ? { ...item, status: "rejected" } : item))
       setProposal(null)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "忽略建议失败")
@@ -811,7 +1025,7 @@ function AIOutlinePanel({ projectId, scopeNode, onApplied }: { projectId: string
           让 AI 自动检查目录完整性
         </Button>
         {scopeNode ? <Button onClick={() => void proposeCustom("请补全当前节点的章节纲要：明确施工对象与工序展开，补充质量控制、安全环保、验收记录和异常处置闭环；将缺少的工程量、图纸、参数、频率、阈值等列入人工待确认项，不编造项目事实。", "node")} loading={loading || activeJob?.job_type === "outline_proposal"} variant="accent" icon={<Sparkles className="h-4 w-4" />}>
-          AI 补全当前节点纲要
+          按默认要求生成本章纲要
         </Button> : null}
         {proposal ? (
           <div className="rounded-[var(--radius)] border border-accent/30 bg-accent/[0.05] p-3">
@@ -824,8 +1038,88 @@ function AIOutlinePanel({ projectId, scopeNode, onApplied }: { projectId: string
             {snapshotId ? <Button size="sm" variant="ghost" onClick={async () => { try { await restoreOutlineSnapshot(projectId, snapshotId); toast.success("已撤销本次目录修改"); setSnapshotId(null); onApplied() } catch (err) { toast.error(err instanceof Error ? err.message : "撤销失败") } }} icon={<RotateCcw className="h-3.5 w-3.5" />}>撤销本次修改</Button> : null}
           </div>
         ) : null}
+        {proposalHistory.length ? <details className="rounded-[var(--radius)] border border-border bg-background/30 px-3 py-2">
+          <summary className="cursor-pointer select-none text-xs font-medium text-foreground">方案记录 <span className="ml-1 text-[10px] font-normal text-muted-foreground">{proposalHistory.length} 条，点击可重新查看</span></summary>
+          <div className="mt-2 flex flex-col gap-1.5">
+            {proposalHistory.slice(0, 8).map((item) => <button key={item.id} type="button" onClick={() => { setProposal(item); setExcludedNodeIds([]); setSnapshotId(null) }} className="flex items-center justify-between gap-3 rounded border border-border/70 px-2.5 py-2 text-left hover:border-primary/40">
+              <span className="min-w-0 truncate text-[11px] text-foreground">{item.suggestion.replace(/^用户要求：/, "") || "未命名目录建议"}</span>
+              <span className={cn("shrink-0 text-[10px]", item.status === "pending" ? "text-amber-700" : item.status === "applied" ? "text-emerald-700" : "text-muted-foreground")}>{proposalStatusLabel(item.status)} · {formatProposalTime(item.created_at)}</span>
+            </button>)}
+          </div>
+        </details> : null}
       </div>
+      {compareOpen && proposal ? <OutlineCompareDrawer currentNodes={currentNodes} proposal={proposal} excludedNodeIds={excludedNodeIds} onClose={() => setCompareOpen(false)} onConfirm={applyConfirmed} applying={applying} /> : null}
     </Card>
+  )
+}
+
+function proposalStatusLabel(status: string): string {
+  return status === "pending" ? "待审阅" : status === "applied" ? "已应用" : status === "rejected" ? "已忽略" : status
+}
+
+function formatProposalTime(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return "时间未知"
+  return date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })
+}
+
+function OutlineCompareDrawer({
+  currentNodes,
+  proposal,
+  excludedNodeIds,
+  onClose,
+  onConfirm,
+  applying,
+}: {
+  currentNodes: OutlineNode[]
+  proposal: AIProposal
+  excludedNodeIds: string[]
+  onClose: () => void
+  onConfirm: () => Promise<void>
+  applying: boolean
+}) {
+  const proposed = Array.isArray(proposal.preview.nodes) ? proposal.preview.nodes as ProposalNode[] : []
+  const currentById = new Map(currentNodes.map((node) => [node.node_id, node]))
+  const currentPreview = proposed.map((item) => {
+    const current = currentById.get(item.node_id ?? "")
+    if (current) return { ...current, __action: "当前", __reason: "应用前的目录内容" } as ProposalNode
+    return {
+      node_id: item.node_id,
+      title: "（当前目录中不存在）",
+      level: item.level,
+      target_word_count: null,
+      __action: "新增",
+      __reason: "该节点将在应用 AI 方案后出现",
+    } as ProposalNode
+  })
+  return (
+    <div className="fixed inset-0 z-[60] flex justify-end bg-black/25" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <aside className="flex h-full w-[min(900px,96vw)] flex-col border-l border-border bg-background shadow-2xl" role="dialog" aria-modal="true" aria-label="确认目录新版本">
+        <div className="flex items-center justify-between border-b border-border px-5 py-4">
+          <div><h2 className="text-base font-semibold text-foreground">确认目录新版本</h2><p className="mt-1 text-xs text-muted-foreground">AI 方案尚未写入目录，请比较当前版本与新版本后再决定。</p></div>
+          <Button size="icon" variant="ghost" onClick={onClose} aria-label="关闭版本对比"><span className="text-lg">×</span></Button>
+        </div>
+        <div className="grid min-h-0 flex-1 gap-3 overflow-hidden p-4 xl:grid-cols-2">
+          <OutlineCompareColumn title="当前受影响内容" nodes={currentPreview} />
+          <OutlineCompareColumn title="应用后目录内容" nodes={proposed.filter((item) => !excludedNodeIds.includes(item.node_id ?? ""))} highlighted />
+        </div>
+        <div className="flex justify-end gap-2 border-t border-border px-5 py-3">
+          <Button variant="outline" onClick={onClose}>暂不采用</Button>
+          <Button variant="accent" onClick={() => void onConfirm()} loading={applying} icon={<Save className="h-4 w-4" />}>采用 AI 目录</Button>
+        </div>
+      </aside>
+    </div>
+  )
+}
+
+function OutlineCompareColumn({ title, nodes, highlighted = false }: { title: string; nodes: ProposalNode[]; highlighted?: boolean }) {
+  return (
+    <section className={cn("flex min-h-0 flex-col overflow-hidden rounded-[var(--radius)] border", highlighted ? "border-accent/40 bg-accent/[0.025]" : "border-border bg-card")}>
+      <div className="border-b border-border px-3 py-2 text-xs font-semibold text-foreground">{title} <span className="ml-1 text-[10px] font-normal text-muted-foreground">{nodes.length} 项</span></div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        {nodes.length ? <ul className="flex flex-col gap-1.5">{nodes.map((node, index) => <li key={`${node.node_id ?? "node"}-${index}`} className="rounded border border-border/70 px-2.5 py-2 text-xs"><div className="font-medium text-foreground">{node.title || node.node_id || "未命名节点"}</div><div className="mt-1 text-[10px] text-muted-foreground">{node.__action || "保持"}{node.__reason ? ` · ${node.__reason}` : ""}</div></li>)}</ul> : <p className="py-8 text-center text-xs text-muted-foreground">暂无可比较节点</p>}
+      </div>
+    </section>
   )
 }
 

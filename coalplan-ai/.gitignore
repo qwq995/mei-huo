@@ -15,6 +15,11 @@ src/coalplan/web/tsconfig.tsbuildinfo
 src/coalplan/web1.0/dist/
 src/coalplan/web1.0/node_modules/
 src/coalplan/web1.0/*.tsbuildinfo
+src/coalplan/web1.0/.vite/
+src/coalplan/web1.0/.frontend-live*.log
+src/coalplan/web1.0/.frontend-live*.err.log
+src/coalplan/web1.0/playwright-report/
+src/coalplan/web1.0/test-results/
 docs/generation-goal-*
 docs/generation-quality-audit.md
 docs/local-corpus-analysis.*

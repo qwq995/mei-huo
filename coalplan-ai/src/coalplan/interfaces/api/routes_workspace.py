@@ -3,9 +3,13 @@ from __future__ import annotations
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
 from coalplan.interfaces.api.execution_window_guard import ensure_generation_window
+from coalplan.application.generation_jobs import JobConflictError
 
 from .schemas import (
     AIEditProposalRequest,
+    ChapterGenerationPlanRequest,
+    ChapterPlanAIProposalRequest,
+    ChapterVersionReviewRequest,
     ContentNodeUpdateRequest,
     ManualVersionRequest,
     OutlineAIProposalRequest,
@@ -17,6 +21,9 @@ from .schemas import (
     RevisionActionRequest,
     SelectVersionRequest,
     SupplementRequest,
+    ProjectMemoryRequest,
+    ChapterBasisPreferencesRequest,
+    SupplementBatchApplyRequest,
     WordCountEstimateRequest,
 )
 
@@ -41,7 +48,7 @@ def get_outline_overview(project_id: str, request: Request):
 
 @router.get("/projects/{project_id}/outline/proposals")
 def list_outline_proposals(project_id: str, request: Request, status: str = "pending"):
-    return request.app.state.workspace_store.list_proposals(project_id, target_type="outline", status=status)
+    return request.app.state.workspace_store.list_proposals(project_id, target_type="outline", status=None if status == "all" else status)
 
 
 @router.post("/projects/{project_id}/outline-nodes")
@@ -65,10 +72,12 @@ def update_outline_node(project_id: str, node_id: str, payload: OutlineNodeUpdat
 
 
 @router.delete("/projects/{project_id}/outline-nodes/{node_id}")
-def delete_outline_node(project_id: str, node_id: str, request: Request):
+def delete_outline_node(project_id: str, node_id: str, request: Request, mode: str = "subtree"):
     try:
-        request.app.state.workspace_store.delete_outline_node(project_id, node_id)
-        return {"deleted": True}
+        if mode not in {"node", "subtree"}:
+            raise HTTPException(status_code=400, detail="删除模式只能是 node 或 subtree")
+        request.app.state.workspace_store.delete_outline_node(project_id, node_id, delete_subtree=mode == "subtree")
+        return {"deleted": True, "mode": mode}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -207,6 +216,174 @@ def get_chapter_workspace(project_id: str, node_id: str, request: Request):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.get("/projects/{project_id}/memories")
+def list_project_memories(project_id: str, request: Request):
+    return request.app.state.workspace_store.list_project_memories(project_id)
+
+
+@router.get("/projects/{project_id}/chapters/{node_id}/basis-preferences")
+def get_chapter_basis_preferences(project_id: str, node_id: str, request: Request):
+    try:
+        return request.app.state.pipeline.get_chapter_basis_preferences(project_id, node_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.put("/projects/{project_id}/chapters/{node_id}/basis-preferences")
+def save_chapter_basis_preferences(project_id: str, node_id: str, payload: ChapterBasisPreferencesRequest, request: Request):
+    try:
+        return request.app.state.pipeline.save_chapter_basis_preferences(project_id, node_id, payload.model_dump())
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/memories")
+def add_project_memory(project_id: str, payload: ProjectMemoryRequest, request: Request):
+    try:
+        return request.app.state.workspace_store.add_project_memory(project_id, payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/projects/{project_id}/memories/{memory_id}")
+def update_project_memory(project_id: str, memory_id: str, payload: ProjectMemoryRequest, request: Request):
+    try:
+        return request.app.state.workspace_store.update_project_memory(project_id, memory_id, payload.model_dump(exclude_unset=True))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/supplement-batches")
+def create_supplement_batch(project_id: str, request: Request):
+    try:
+        return request.app.state.workspace_store.create_supplement_batch(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/supplement-batches/{batch_id}")
+def get_supplement_batch(project_id: str, batch_id: str, request: Request):
+    try:
+        return request.app.state.workspace_store.get_supplement_batch(project_id, batch_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/supplement-batches/{batch_id}/apply")
+def apply_supplement_batch(project_id: str, batch_id: str, payload: SupplementBatchApplyRequest, request: Request):
+    try:
+        result = request.app.state.workspace_store.apply_supplement_batch(
+            project_id, batch_id, payload.values, payload.selected_item_ids,
+        )
+        if payload.regenerate and result["affected_node_ids"]:
+            job = request.app.state.job_manager.create(
+                project_id, "chapter_batch_generation", {"node_ids": result["affected_node_ids"]},
+            )
+            result["regeneration_job"] = job
+        return result
+    except JobConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/chapters/{node_id}/generation-plan")
+def get_chapter_generation_plan(project_id: str, node_id: str, request: Request):
+    try:
+        return request.app.state.pipeline.preview_chapter_writing_units(project_id, node_id)["generation_plan"]
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.put("/projects/{project_id}/chapters/{node_id}/generation-plan")
+def save_chapter_generation_plan(
+    project_id: str,
+    node_id: str,
+    payload: ChapterGenerationPlanRequest,
+    request: Request,
+):
+    try:
+        return request.app.state.pipeline.save_chapter_generation_plan(
+            project_id,
+            node_id,
+            payload.model_dump(),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/chapters/{node_id}/generation-plan/proposals")
+def list_chapter_plan_proposals(project_id: str, node_id: str, request: Request, status: str = "pending"):
+    return [
+        item
+        for item in request.app.state.workspace_store.list_proposals(
+            project_id,
+            target_type="chapter_plan",
+            status=status,
+        )
+        if item.get("target_id") == node_id
+    ]
+
+
+@router.post("/projects/{project_id}/chapters/{node_id}/generation-plan/propose")
+def propose_chapter_generation_plan(
+    project_id: str,
+    node_id: str,
+    payload: ChapterPlanAIProposalRequest,
+    request: Request,
+):
+    try:
+        return request.app.state.pipeline.propose_chapter_generation_plan(
+            project_id,
+            node_id,
+            payload.suggestion,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/chapters/{node_id}/generation-plan/proposals/{proposal_id}/apply")
+def apply_chapter_plan_proposal(project_id: str, node_id: str, proposal_id: str, request: Request):
+    try:
+        proposal = next(
+            (
+                item for item in request.app.state.workspace_store.list_proposals(
+                    project_id, target_type="chapter_plan"
+                )
+                if item.get("id") == proposal_id and item.get("target_id") == node_id
+            ),
+            None,
+        )
+        if proposal is None:
+            raise KeyError(proposal_id)
+        return request.app.state.workspace_store.apply_proposal(project_id, proposal_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/chapters/{node_id}/generation-plan/proposals/{proposal_id}/reject")
+def reject_chapter_plan_proposal(project_id: str, node_id: str, proposal_id: str, request: Request):
+    try:
+        return request.app.state.workspace_store.reject_proposal(
+            project_id,
+            proposal_id,
+            target_type="chapter_plan",
+            target_id=node_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/projects/{project_id}/chapters/{node_id}/supplements")
 def add_supplement(project_id: str, node_id: str, payload: SupplementRequest, request: Request):
     try:
@@ -327,6 +504,27 @@ def get_version_evidence_audit(project_id: str, node_id: str, version_id: str, r
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.post("/projects/{project_id}/chapters/{node_id}/versions/{version_id}/review-confirmation")
+def confirm_version_review(
+    project_id: str,
+    node_id: str,
+    version_id: str,
+    payload: ChapterVersionReviewRequest,
+    request: Request,
+):
+    try:
+        return request.app.state.workspace_store.confirm_version_review(
+            project_id,
+            node_id,
+            version_id,
+            note=payload.note,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/projects/{project_id}/chapters/{node_id}/versions/{version_id}/evidence-audit/revision-action")
 def execute_evidence_utilization_revision_action(
     project_id: str,
@@ -429,25 +627,24 @@ def select_version(project_id: str, node_id: str, payload: SelectVersionRequest,
 @router.post("/projects/{project_id}/chapters/{node_id}/propose-ai-edit")
 def propose_chapter_edit(project_id: str, node_id: str, payload: AIEditProposalRequest, request: Request):
     try:
-        base = payload.base_markdown
-        if base is None:
-            workspace = request.app.state.workspace_store.get_workspace(project_id, node_id)
-            selected = next((item for item in workspace["versions"] if item["id"] == workspace["selected_version_id"]), None)
-            base = selected["markdown"] if selected else ""
-        prompt = "\n".join(
-            [
-                "你是施工组织设计章节修改助手。只输出修改后的 Markdown，不要解释。",
-                f"修改建议：{payload.suggestion}",
-                "原文：",
-                base,
-            ]
-        )
-        preview = request.app.state.pipeline.llm.complete(prompt)
-        return request.app.state.workspace_store.propose_chapter_edit(project_id, node_id, payload.suggestion, preview)
+        return request.app.state.pipeline.propose_chapter_edit(project_id, node_id, payload.suggestion)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/chapters/{node_id}/proposals")
+def list_chapter_proposals(project_id: str, node_id: str, request: Request, status: str = "pending"):
+    return [
+        item
+        for item in request.app.state.workspace_store.list_proposals(
+            project_id,
+            target_type="chapter",
+            status=status,
+        )
+        if item.get("target_id") == node_id
+    ]
 
 
 @router.post("/projects/{project_id}/chapters/{node_id}/subsection-proposal")

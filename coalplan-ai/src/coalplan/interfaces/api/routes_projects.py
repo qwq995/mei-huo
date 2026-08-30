@@ -21,6 +21,7 @@ from .schemas import (
     PipelineBlueprintResponse,
     PipelineGateReportResponse,
     ProjectCreateRequest,
+    ProjectMetadataUpdateRequest,
     ProjectProfileResponse,
     RevisionDecisionsResponse,
     ProjectTemplateUpdateRequest,
@@ -72,6 +73,24 @@ def get_project(project_id: str, request: Request):
         return project_summary(pipeline.projects.get(project_id))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.patch("/projects/{project_id}", response_model=ProjectSummaryResponse)
+def update_project_metadata(project_id: str, payload: ProjectMetadataUpdateRequest, request: Request):
+    pipeline = request.app.state.pipeline
+    try:
+        name = payload.name.strip()
+        if not name:
+            raise ValueError("项目名称不能为空。")
+        project = pipeline.projects.get(project_id)
+        project.name = name
+        project.project_tags = list(dict.fromkeys(tag.strip() for tag in payload.project_tags if tag.strip()))
+        pipeline.projects.save(project)
+        return project_summary(project)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/projects/{project_id}/experience-summary", response_model=dict)

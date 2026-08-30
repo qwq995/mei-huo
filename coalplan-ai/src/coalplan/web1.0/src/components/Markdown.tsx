@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils"
 
 marked.setOptions({ gfm: true, breaks: true })
 
-export function Markdown({ content, className }: { content: string; className?: string }) {
+export function Markdown({ content, className, onClick }: { content: string; className?: string; onClick?: React.MouseEventHandler<HTMLDivElement> }) {
   const html = useMemo(() => {
     if (!content?.trim()) return ""
     try {
@@ -18,5 +18,5 @@ export function Markdown({ content, className }: { content: string; className?: 
     return <p className="text-sm italic text-muted-foreground">（暂无内容）</p>
   }
 
-  return <div className={cn("prose-doc", className)} dangerouslySetInnerHTML={{ __html: html }} />
+  return <div className={cn("prose-doc", className)} onClick={onClick} dangerouslySetInnerHTML={{ __html: html }} />
 }

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, HTTPException, Request
 
 from coalplan.interfaces.api.execution_window_guard import ensure_generation_window
@@ -17,6 +19,36 @@ from .schemas import (
 )
 
 router = APIRouter(tags=["generation"])
+
+
+def _public_chapter_markdown(markdown: str) -> str:
+    """Expose only deliverable body text; stored versions retain audit/source blocks."""
+    lines = (markdown or "").splitlines()
+    try:
+        start = next(index for index, line in enumerate(lines) if re.match(r"^##\s+生成正文\s*$", line.strip()))
+        lines = lines[start + 1:]
+        end = next((index for index, line in enumerate(lines) if re.match(r"^##\s+", line.strip())), len(lines))
+        lines = lines[:end]
+    except StopIteration:
+        pass
+    cleaned: list[str] = []
+    for line in lines:
+        # Trace ids can be inline in an otherwise valid paragraph. Remove only
+        # the trace annotation, never the whole paragraph.
+        line = re.sub(
+            r"\s*(?:[（(][^()（）]*\b(?:evidence_id|section_id|atom_id|fact_id)\s*[:=][^()（）]*[）)]|"
+            r"\[[^\[\]]*\b(?:evidence_id|section_id|atom_id|fact_id)\s*[:=][^\[\]]*\])",
+            "",
+            line,
+            flags=re.I,
+        )
+        line = re.sub(r"\b(?:evidence_id|section_id|atom_id|fact_id)\s*[:=]\s*[^\s，。；;，,]+", "", line, flags=re.I)
+        line = re.sub(r"【需人工补充：[^】]+】", "", line).rstrip()
+        if re.match(r"^\s*[-*]\s*[。；;，,：:]?\s*$", line):
+            continue
+        if line.strip():
+            cleaned.append(line)
+    return "\n".join(cleaned).strip()
 
 
 @router.post("/projects/{project_id}/generate", response_model=GenerateResponse)
@@ -42,8 +74,10 @@ def list_chapters(project_id: str, request: Request):
         project = pipeline.projects.get(project_id)
         if not project.runs:
             return []
-        return [
-            {
+        result = []
+        for task in project.runs[-1].chapter_tasks:
+            selected = _selected_version(request, project_id, task.node_id)
+            result.append({
                 "node_id": task.node_id,
                 "title": task.title,
                 "target_word_count": task.target_word_count,
@@ -51,10 +85,12 @@ def list_chapters(project_id: str, request: Request):
                 "source_matches": [_dump(match) for match in task.source_matches],
                 "source_mapping": _dump(task.source_mapping) if task.source_mapping else None,
                 "draft_id": task.draft_id,
+                "version_id": selected.get("id") if selected else None,
+                "version_no": selected.get("version_no") if selected else None,
+                "selected_version_id": selected.get("id") if selected else None,
                 "error_message": task.error_message,
-            }
-            for task in project.runs[-1].chapter_tasks
-        ]
+            })
+        return result
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -107,6 +143,16 @@ def generate_chapter_writing_skill(project_id: str, node_id: str, request: Reque
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.put("/projects/{project_id}/chapters/{node_id}/writing-skill", response_model=dict)
+def save_chapter_writing_skill(project_id: str, node_id: str, payload: dict, request: Request):
+    try:
+        return request.app.state.pipeline.save_chapter_writing_skill(project_id, node_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/projects/{project_id}/chapters/{node_id}/generate", response_model=ChapterResponse)
 def generate_chapter(project_id: str, node_id: str, request: Request):
     pipeline = request.app.state.pipeline
@@ -115,17 +161,20 @@ def generate_chapter(project_id: str, node_id: str, request: Request):
         draft = pipeline.generate_one(project_id, node_id)
         project = pipeline.projects.get(project_id)
         task = next((item for item in project.runs[-1].chapter_tasks if item.node_id == node_id), None)
+        selected_version = _selected_version(request, project_id, node_id)
+        version_metadata = (selected_version or {}).get("generation_metadata") or {}
+        version_mapping = version_metadata.get("source_mapping")
         return ChapterResponse(
             node_id=draft.node_id,
             title=draft.title,
             status=draft.validation_status.value,
-            markdown=draft.markdown,
+            markdown=_public_chapter_markdown(draft.markdown),
             draft_path=draft.artifact_path,
             source_matches=[_dump(match) for match in task.source_matches] if task else [],
-            source_mapping=_dump(task.source_mapping) if task and task.source_mapping else None,
-            generation_metadata=draft.generation_metadata,
+            source_mapping=version_mapping or (_dump(task.source_mapping) if task and task.source_mapping else None),
+            generation_metadata=version_metadata or draft.generation_metadata,
             evidence_audit=_dump(draft.evidence_audit) if draft.evidence_audit else None,
-            version=_selected_version(request, project_id, node_id),
+            version=selected_version,
         )
     except HTTPException:
         raise
@@ -174,14 +223,18 @@ def get_chapter(project_id: str, node_id: str, request: Request):
         elif task.draft_id:
             path = str(pipeline.artifacts.root / project_id / "chapters" / f"{node_id}.md")
             markdown = pipeline.artifacts.read_text(path)
+        version_metadata = (version or {}).get("generation_metadata") or {}
+        version_mapping = version_metadata.get("source_mapping")
         return ChapterResponse(
             node_id=task.node_id,
             title=task.title,
-            status=task.status.value,
-            markdown=markdown,
+            status=_effective_task_status(request, project_id, task),
+            markdown=_public_chapter_markdown(markdown),
             draft_path=path,
             source_matches=[_dump(match) for match in task.source_matches],
-            source_mapping=_dump(task.source_mapping) if task.source_mapping else None,
+            source_mapping=version_mapping or (_dump(task.source_mapping) if task.source_mapping else None),
+            generation_metadata=version_metadata,
+            evidence_audit=version.get("evidence_audit") if version else None,
             version=version,
         )
     except KeyError as exc:
@@ -251,6 +304,16 @@ def get_quality_audit_revision_targets(project_id: str, request: Request):
         return pipeline.quality_audit_revision_targets(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        if "No quality audit report is available" in str(exc):
+            return {
+                "project_id": project_id,
+                "status": "not_run",
+                "targets": [],
+                "message": "尚未运行成稿质量审查，完成阶段性合稿后即可生成修订任务。",
+                "next_action": "run_quality_audit",
+            }
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -352,11 +415,16 @@ def _selected_version(request: Request, project_id: str, node_id: str) -> dict |
 
 def _effective_task_status(request: Request, project_id: str, task) -> str:
     """Treat a persisted selected version as generated after imports or service restarts."""
-    if task.status.value in {"passed", "needs_repair", "failed", "running"}:
-        return task.status.value
     try:
         workspace = request.app.state.workspace_store.get_workspace(project_id, task.node_id)
-        if workspace.get("selected_version_id"):
+        selected_id = workspace.get("selected_version_id")
+        selected = next((item for item in workspace.get("versions", []) if item.get("id") == selected_id), None)
+        review_status = ((selected or {}).get("generation_metadata") or {}).get("quality_review", {}).get("status")
+        if review_status in {"needs_repair", "failed"}:
+            return review_status
+        if selected_id and review_status == "passed":
+            return "passed"
+        if selected_id and task.status.value not in {"needs_repair", "failed", "running"}:
             return "passed"
     except Exception:
         pass

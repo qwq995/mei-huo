@@ -17,3 +17,19 @@ def get_final_markdown(project_id: str, request: Request):
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+
+@router.get("/projects/{project_id}/artifacts/current.md", response_class=PlainTextResponse)
+def get_current_generated_markdown(project_id: str, request: Request):
+    """Return a reviewable manuscript from currently selected/generated chapters.
+
+    This deliberately renders in memory so previewing or downloading an in-progress
+    manuscript does not overwrite the project's final merge artifact or run status.
+    """
+    pipeline = request.app.state.pipeline
+    try:
+        markdown, _ = pipeline.render_partial_markdown(project_id)
+        return markdown
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

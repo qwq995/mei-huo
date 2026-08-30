@@ -125,6 +125,34 @@ class ChapterSupplementRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
 
 
+class ProjectMemoryRecord(Base):
+    """Durable user-confirmed project facts reusable across chapters."""
+
+    __tablename__ = "project_memories"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    topic: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source_node_id: Mapped[str | None] = mapped_column(Text, index=True)
+    source_supplement_id: Mapped[str | None] = mapped_column(Text, index=True)
+    tags_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
+
+
+class SupplementBatchRecord(Base):
+    __tablename__ = "supplement_batches"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="draft")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
+
+
 class ChapterAttachmentRecord(Base):
     __tablename__ = "chapter_attachments"
 
@@ -204,6 +232,7 @@ class GenerationJobRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    pause_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class LLMTraceRecord(Base):

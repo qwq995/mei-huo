@@ -2,6 +2,11 @@
   "name": "coalplan-studio",
   "version": "0.1.0",
   "private": true,
+  "overrides": {
+    "react-markdown-editor-lite": {
+      "nanoid": "3.3.8"
+    }
+  },
   "type": "module",
   "scripts": {
     "dev": "vite --host",
@@ -11,9 +16,11 @@
   },
   "dependencies": {
     "lucide-react": "^0.456.0",
+    "markdown-it": "^15.0.1",
     "marked": "^18.0.5",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-markdown-editor-lite": "^1.4.2"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.0",

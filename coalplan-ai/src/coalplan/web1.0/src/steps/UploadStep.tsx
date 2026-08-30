@@ -92,8 +92,8 @@ export function UploadStep({
         <button onClick={() => setView("bid")} className={cn("rounded-[calc(var(--radius)-2px)] px-4 py-2 text-sm font-medium", view === "bid" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted")}>项目投标资料</button>
         <button onClick={() => setView("reference")} className={cn("rounded-[calc(var(--radius)-2px)] px-4 py-2 text-sm font-medium", view === "reference" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted")}>优秀施组参考库</button>
       </div>
-      {view === "bid" ? <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
-      <Card className="p-5">
+      {view === "bid" ? <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px] xl:gap-6">
+      <Card className="min-w-0 p-4 sm:p-5">
         <SectionTitle title="上传投标 / 技术资料" description="第一阶段建议上传标准化后的 Markdown。系统会切章、生成目录和后续来源映射。" />
         <div
           onDragOver={(e) => {
@@ -108,16 +108,16 @@ export function UploadStep({
           }}
           onClick={() => inputRef.current?.click()}
           className={cn(
-            "mt-4 flex cursor-pointer flex-col items-center justify-center gap-3 rounded-[var(--radius)] border-2 border-dashed px-6 py-14 text-center transition-colors",
+            "mt-4 flex cursor-pointer flex-col items-center justify-center gap-2.5 rounded-[var(--radius)] border-2 border-dashed px-4 py-9 text-center transition-colors sm:gap-3 sm:px-6 sm:py-12",
             dragging ? "border-primary bg-primary/[0.05]" : "border-border hover:border-primary/40 hover:bg-muted/40",
           )}
         >
-          <span className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-            <UploadCloud className="h-7 w-7" />
+          <span className="flex h-11 w-11 items-center justify-center rounded-full bg-primary/10 text-primary sm:h-14 sm:w-14">
+            <UploadCloud className="h-5 w-5 sm:h-7 sm:w-7" />
           </span>
           <div>
             <p className="text-sm font-medium text-foreground">拖拽文件到此处，或点击选择</p>
-            <p className="mt-1 text-xs text-muted-foreground">支持 .md / .markdown / .txt，可一次选择多个</p>
+            <p className="mt-1 max-w-[260px] text-xs leading-relaxed text-muted-foreground">支持 .md / .markdown / .txt，可一次选择多个</p>
           </div>
           <input
             ref={inputRef}
@@ -135,7 +135,7 @@ export function UploadStep({
         <div className="mt-5">
           <p className="mb-2 text-xs font-medium text-muted-foreground">本次会话上传记录</p>
           {!files.length ? (
-            <EmptyState icon={<FileText className="h-6 w-6" />} title="暂未上传文件" description="上传后即可进入目录生成与精修。" />
+            <EmptyState className="py-7 sm:py-10" icon={<FileText className="h-6 w-6" />} title="暂未上传文件" description="上传后即可进入目录生成与精修。" />
           ) : (
             <ul className="flex flex-col gap-2">
               {files.map((f, i) => (
@@ -159,7 +159,7 @@ export function UploadStep({
         <StoredDocumentsPanel documents={storedDocuments.data ?? []} loading={storedDocuments.loading} error={storedDocuments.error ?? undefined} onRefresh={() => void storedDocuments.reload()} />
       </Card>
 
-      <div className="flex flex-col gap-4">
+      <div className="min-w-0 flex flex-col gap-4">
         <Card className="p-5">
           <SectionTitle title="当前工程" />
           <dl className="mt-4 grid grid-cols-3 gap-3 text-center">
@@ -168,7 +168,7 @@ export function UploadStep({
             <Stat label="运行" value={project.run_count} />
           </dl>
         </Card>
-        <Card className="p-5">
+        <Card className="p-4 sm:p-5">
           <p className="text-sm font-medium text-foreground">下一步：目录工作台</p>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">上传完成后，生成可编辑目录，再进行目录扩细、字数估算和逐章生成。</p>
           <Button className="mt-4 w-full" onClick={onNext} loading={uploading} icon={<ArrowRight className="h-4 w-4" />}>
@@ -284,7 +284,7 @@ function ReferenceLibraryPanel({ projectId, onChanged }: { projectId: string; on
     }
   }
   return (
-    <Card className="p-5">
+        <Card className="p-4 sm:p-5">
       <SectionTitle
         title="优秀施组原子库"
         description="与当前投标资料独立存储。AI 先切分，您抽查发布后才参与生成。"

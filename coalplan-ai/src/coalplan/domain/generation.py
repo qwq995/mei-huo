@@ -75,6 +75,9 @@ class Project(BaseModel):
     project_profile: ProjectProfile | None = None
     outline_plan: TemplateOutlinePlan | None = None
     generation_context: GenerationContextState = Field(default_factory=GenerationContextState)
+    # Chapter-scoped user choices for generation basis. Kept in project state so
+    # existing databases do not need a schema migration.
+    chapter_basis_preferences: dict[str, dict] = Field(default_factory=dict)
     template_tree: TemplateTree | None = None
     runs: list[GenerationRun] = Field(default_factory=list)
     created_at: str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))

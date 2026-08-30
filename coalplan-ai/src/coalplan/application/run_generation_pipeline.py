@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 from uuid import uuid4
@@ -9,6 +10,7 @@ from uuid import uuid4
 from coalplan.application.content_revision_plan import build_content_revision_plan, render_content_revision_plan_markdown
 from coalplan.application.current_execution_window import build_current_execution_window, render_current_execution_window_markdown
 from coalplan.application.generate_chapter import generate_chapter
+from coalplan.application.generation_cache import CachedLLMClient, dependency_fingerprint
 from coalplan.application.generate_project_profile import generate_project_profile
 from coalplan.application.generation_context import (
     chapter_summary_patch,
@@ -63,6 +65,7 @@ from coalplan.application.quality_iteration_learning import (
 )
 from coalplan.application.reference_atom_retrieval import prefilter_reference_atoms, retrieve_reference_atoms
 from coalplan.application.chapter_writing_guidance import guidance_for_node
+from coalplan.application.chapter_skill_library import render_chapter_skills_for_prompt
 from coalplan.application.chapter_writing_skill import (
     ChapterWritingSkill,
     generate_chapter_writing_skill,
@@ -74,6 +77,14 @@ from coalplan.application.chapter_writing_units import (
     plan_chapter_writing_units,
     select_evidence_for_writing_unit,
     select_sections_for_writing_unit,
+)
+from coalplan.application.chapter_group_recommendation import recommend_chapter_groups
+from coalplan.application.chapter_generation_plan import (
+    ChapterGenerationPlan,
+    default_chapter_generation_plan,
+    generation_plan_prompt,
+    render_chapter_plan_for_prompt,
+    validate_saved_plan,
 )
 from coalplan.application.revision_decision import build_revision_decisions, render_revision_decisions
 from coalplan.application.serialization import dump_model, to_json_text
@@ -95,6 +106,15 @@ from coalplan.ports.markdown_parser import MarkdownParser
 from coalplan.ports.repository import ArtifactRepository, ProjectRepository
 from coalplan.ports.retriever import SourceRetriever
 from coalplan.ports.template_loader import TemplateLoader
+
+
+def _load_writing_guide_context() -> str:
+    """Load the user-provided guide summary without making it a project fact source."""
+    path = Path(__file__).resolve().parents[2] / "docs" / "knowledge" / "危大工程专项施工方案编写指南_规则记忆.md"
+    try:
+        return path.read_text(encoding="utf-8-sig")[:14_000]
+    except (OSError, UnicodeError):
+        return ""
 
 
 def _outline_refine_scope(nodes: list[dict], scope_node_id: str | None, scope_mode: str) -> set[str]:
@@ -344,7 +364,7 @@ class GenerationPipeline:
             project_id=project.id,
             toc_items=project.source_toc.items,
             sections=project.sections,
-            llm=self._structured_llm(),
+            llm=CachedLLMClient(self._structured_llm(), self.artifacts, project.id, namespace="source-mapping"),
             artifacts=self.artifacts,
         )
         project.outline_plan = None
@@ -1641,6 +1661,19 @@ class GenerationPipeline:
             try:
                 node = nodes_by_id[task.node_id]
                 task.target_word_count = node.target_word_count
+                dependency_hash = self._chapter_dependency_fingerprint(project, node)
+                cached_draft = self._reuse_unchanged_chapter(project.id, node, dependency_hash)
+                if cached_draft is not None:
+                    task.status = TaskStatus.passed
+                    task.error_message = None
+                    task.draft_id = cached_draft.id
+                    drafts.append(cached_draft)
+                    run.logs.append(f"cached: {task.title}")
+                    self.projects.save(project)
+                    if progress_callback:
+                        progress_callback("cache", task_index, total_tasks, f"已复用未变化章节：{task.title}")
+                    continue
+                saved_generation_plan = (node.chapter_summary or {}).get("generation_plan")
                 policy = policy_by_node.get(node.id)
                 mapping, selected_sections, source_matches = map_chapter_sources(
                     project_id=project.id,
@@ -1654,6 +1687,7 @@ class GenerationPipeline:
                     max_evidence_spans=policy.max_evidence_spans if policy else 14,
                     mapping_context=_join_context(
                         _mapping_control_context(policy),
+                        render_chapter_plan_for_prompt(saved_generation_plan),
                         self._quality_feedback_mapping_context(project.id),
                     ),
                 )
@@ -1666,8 +1700,12 @@ class GenerationPipeline:
                     drafts.append(draft)
                     run.logs.append(f"{task.status.value}: {task.title}")
                     continue
-                writing_skill = self._ensure_chapter_writing_skill(
-                    project=project, node=node, selected_sections=selected_sections, policy=policy,
+                writing_skill = (
+                    None
+                    if isinstance(saved_generation_plan, dict) and saved_generation_plan.get("status") == "confirmed"
+                    else self._ensure_chapter_writing_skill(
+                        project=project, node=node, selected_sections=selected_sections, policy=policy,
+                    )
                 )
                 writing_unit_contexts = self._build_writing_unit_contexts(
                     project=project,
@@ -1690,7 +1728,7 @@ class GenerationPipeline:
                     project_id=project.id,
                     node=node,
                     task=task,
-                    llm=self.llm,
+                    llm=CachedLLMClient(self.llm, self.artifacts, project.id, namespace="chapter-writing"),
                     artifacts=self.artifacts,
                     project_profile=project.project_profile,
                     selected_source_sections=selected_sections,
@@ -1715,6 +1753,7 @@ class GenerationPipeline:
                     reference_atoms,
                     trusted_project_text=_selected_source_text(task, selected_sections),
                 )
+                draft.generation_metadata["dependency_fingerprint"] = dependency_hash
                 self._record_chapter_version(project.id, node.id, draft, "ai_generate")
                 self._record_reference_atom_usage(project.id, node.id, reference_atoms)
                 drafts.append(draft)
@@ -1722,6 +1761,9 @@ class GenerationPipeline:
                 task.status = TaskStatus.failed
                 task.error_message = str(exc)
             run.logs.append(f"{task.status.value}: {task.title}")
+            # Persist each chapter boundary so a requested pause never loses the
+            # chapters completed before the next model call.
+            self.projects.save(project)
             if progress_callback:
                 progress_callback("writing", task_index, total_tasks, f"已处理章节：{task.title}")
         self._drafts[run.id] = drafts
@@ -1737,8 +1779,32 @@ class GenerationPipeline:
             project.template_tree = self._effective_template_tree(project)
         if project.template_tree is None:
             raise ValueError("Project template tree is not loaded.")
-        run = project.runs[-1] if project.runs else self.prepare_run(project_id)
         drafts = self._selected_version_drafts(project)
+        final_markdown, selected_ids = self.render_partial_markdown(project_id, project=project, drafts=drafts)
+        run = project.runs[-1] if project.runs else self.prepare_run(project_id)
+        run.final_artifact_path = self.artifacts.write_text(project_id, "artifacts/partial.md", final_markdown)
+        run.status = RunStatus.partial_failed
+        run.logs.append(
+            f"Saved partial manuscript with {len(selected_ids)} selected chapters; "
+            f"{len(drafts) - len(selected_ids)} chapters remain pending."
+        )
+        self.projects.save(project)
+        return run
+
+    def render_partial_markdown(
+        self,
+        project_id: str,
+        *,
+        project=None,
+        drafts: list[ChapterDraft] | None = None,
+    ) -> tuple[str, set[str]]:
+        """Render the currently available selected chapters without changing run state."""
+        project = project or self.projects.get(project_id)
+        if project.template_tree is None:
+            project.template_tree = self._effective_template_tree(project)
+        if project.template_tree is None:
+            raise ValueError("Project template tree is not loaded.")
+        drafts = list(drafts if drafts is not None else self._selected_version_drafts(project))
         selected_ids = {draft.node_id for draft in drafts}
         for node in iter_template_nodes(project.template_tree.nodes):
             if node.children or node.id in selected_ids:
@@ -1759,14 +1825,7 @@ class GenerationPipeline:
             project.template_tree.nodes,
             drafts,
         )
-        run.final_artifact_path = self.artifacts.write_text(project_id, "artifacts/partial.md", final_markdown)
-        run.status = RunStatus.partial_failed
-        run.logs.append(
-            f"Saved partial manuscript with {len(selected_ids)} selected chapters; "
-            f"{len(drafts) - len(selected_ids)} chapters remain pending."
-        )
-        self.projects.save(project)
-        return run
+        return final_markdown, selected_ids
 
     def generate_one(
         self,
@@ -1788,6 +1847,19 @@ class GenerationPipeline:
         node = _find_node(project.template_tree.nodes, node_id)
         if node is None:
             raise KeyError(f"Unknown node_id: {node_id}")
+        dependency_hash = self._chapter_dependency_fingerprint(project, node)
+        cached_draft = self._reuse_unchanged_chapter(project.id, node, dependency_hash)
+        if cached_draft is not None:
+            task = next((item for item in run.chapter_tasks if item.node_id == node_id), None)
+            if task is not None:
+                task.status = TaskStatus.passed
+                task.error_message = None
+                task.draft_id = cached_draft.id
+            if progress_callback:
+                progress_callback("cache", 1, 1, "本章依据未变化，已复用上一版本，无需再次调用模型")
+            self.projects.save(project)
+            return cached_draft
+        saved_generation_plan = (node.chapter_summary or {}).get("generation_plan")
         task = next((item for item in run.chapter_tasks if item.node_id == node_id), None)
         if task is None:
             task = ChapterTask(node_id=node.id, title=node.title, target_word_count=node.target_word_count, source_matches=self.retriever.retrieve(node, project.sections, limit=4))
@@ -1811,6 +1883,7 @@ class GenerationPipeline:
             max_evidence_spans=policy.max_evidence_spans if policy else 14,
             mapping_context=_join_context(
                 _mapping_control_context(policy),
+                render_chapter_plan_for_prompt(saved_generation_plan),
                 self._quality_feedback_mapping_context(project.id),
                 revision_context,
             ),
@@ -1834,8 +1907,12 @@ class GenerationPipeline:
             self._persist_validation(project.id, run, drafts=self._drafts.get(run.id, []), template_tree=project.template_tree, control_plan=control_plan)
             self.projects.save(project)
             return draft
-        writing_skill = self._ensure_chapter_writing_skill(
-            project=project, node=node, selected_sections=selected_sections, policy=policy,
+        writing_skill = (
+            None
+            if isinstance(saved_generation_plan, dict) and saved_generation_plan.get("status") == "confirmed"
+            else self._ensure_chapter_writing_skill(
+                project=project, node=node, selected_sections=selected_sections, policy=policy,
+            )
         )
         if progress_callback:
             progress_callback("atom_retrieval", 0, 1, "已完成来源映射，正在匹配优质原子")
@@ -1864,7 +1941,7 @@ class GenerationPipeline:
             project_id=project.id,
             node=node,
             task=task,
-            llm=self.llm,
+            llm=CachedLLMClient(self.llm, self.artifacts, project.id, namespace="chapter-writing"),
             artifacts=self.artifacts,
             project_profile=project.project_profile,
             selected_source_sections=selected_sections,
@@ -1895,6 +1972,7 @@ class GenerationPipeline:
             reference_atoms,
             trusted_project_text=revision_source_text,
         )
+        draft.generation_metadata["dependency_fingerprint"] = dependency_hash
         self._record_chapter_version(project.id, node.id, draft, "ai_generate")
         self._record_reference_atom_usage(project.id, node.id, reference_atoms)
         self._drafts.setdefault(run.id, []).append(draft)
@@ -1903,6 +1981,52 @@ class GenerationPipeline:
         self.projects.save(project)
         self.artifacts.write_text(project.id, f"control/job-checkpoints/{node.id}.json", "{}")
         return draft
+
+    def _chapter_dependency_fingerprint(self, project: Project, node) -> str:
+        workspace = self.workspace_store.get_workspace(project.id, node.id) if self.workspace_store else {}
+        atoms = []
+        if self.reference_library is not None:
+            for atom in self.reference_library.list_atoms():
+                status = getattr(atom, "status", "published")
+                if getattr(status, "value", status) == "published":
+                    atoms.append({"id": atom.id, "content": atom.content, "process": atom.process,
+                                  "chapter_type": atom.chapter_type, "specialty": atom.specialty})
+        return dependency_fingerprint({
+            "project": {"name": project.name, "tags": project.project_tags,
+                        "profile": dump_model(project.project_profile) if project.project_profile else None},
+            "node": dump_model(node),
+            "source_documents": [{"id": item.id, "file_name": item.file_name, "status": str(item.status),
+                                  "raw_artifact_path": item.raw_artifact_path, "normalized_artifact_path": item.normalized_artifact_path}
+                                 for item in project.source_documents],
+            "sections": [{"id": item.id, "title_path": item.title_path, "content": item.content} for item in project.sections],
+            "basis_preferences": project.chapter_basis_preferences.get(node.id, {}),
+            "workspace_supplements": workspace.get("supplements", []),
+            "user_context": self._chapter_user_context(project.id, node.id),
+            "published_atoms": atoms,
+        })
+
+    def _reuse_unchanged_chapter(self, project_id: str, node, dependency_hash: str) -> ChapterDraft | None:
+        if self.workspace_store is None:
+            return None
+        try:
+            workspace = self.workspace_store.get_workspace(project_id, node.id)
+            selected_id = workspace.get("selected_version_id")
+            if not selected_id:
+                return None
+            version = self.workspace_store.get_version(project_id, node.id, selected_id)
+            metadata = version.get("generation_metadata") or {}
+            if metadata.get("dependency_fingerprint") != dependency_hash:
+                return None
+            return ChapterDraft(
+                id=version.get("draft_id") or version["id"], node_id=node.id,
+                title=version["title"], markdown=version["markdown"],
+                source_section_ids=version.get("source_section_ids", []),
+                validation_status=TaskStatus.passed,
+                evidence_audit=version.get("evidence_audit"),
+                generation_metadata=metadata, artifact_path=version.get("artifact_path"),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
 
     def preview_chapter_writing_units(self, project_id: str, node_id: str) -> dict:
         project = self.projects.get(project_id)
@@ -1930,6 +2054,7 @@ class GenerationPipeline:
                 if match.section_id in section_by_id
             ]
         atom_candidates = []
+        basis_preferences = self.get_chapter_basis_preferences(project_id, node_id)
         if self.reference_library is not None:
             atoms = self.reference_library.list_atoms()
             query = AtomRetrievalQuery(
@@ -1939,9 +2064,25 @@ class GenerationPipeline:
                 writing_topics=list(dict.fromkeys(topic for unit in units for topic in unit.writing_topics))[:16],
                 top_k=5,
             )
-            atom_candidates = prefilter_reference_atoms(atoms, query, limit=5)
+            auto_candidates = prefilter_reference_atoms(atoms, query, limit=8)
+            by_id = {atom.id: atom for atom in atoms}
+            pinned = [by_id[atom_id] for atom_id in basis_preferences["atom_ids"] if atom_id in by_id]
+            excluded = set(basis_preferences["excluded_atom_ids"])
+            atom_candidates = []
+            for atom in [*pinned, *auto_candidates]:
+                if atom.id in excluded or any(item.id == atom.id for item in atom_candidates):
+                    continue
+                atom_candidates.append(atom)
+            atom_candidates = atom_candidates[:8]
         guidance = guidance_for_node(node)
         chapter_skill = self._load_chapter_writing_skill(project.id, node.id)
+        saved_plan = (node.chapter_summary or {}).get("generation_plan")
+        generation_plan = (
+            ChapterGenerationPlan.model_validate(saved_plan)
+            if isinstance(saved_plan, dict)
+            else default_chapter_generation_plan(node=node, writing_units=units)
+        )
+        plan_confirmed = generation_plan.status == "confirmed"
         return {
             "node_id": node.id,
             "title": node.title,
@@ -1973,21 +2114,165 @@ class GenerationPipeline:
                 }
                 for atom in atom_candidates
             ],
+            "basis_preferences": basis_preferences,
             "writing_skill": {
                 "pattern_key": guidance.pattern_key,
                 "structure": guidance.structure,
                 "matched_skill_keys": node.matched_skill_keys,
+                "chapter_role": chapter_skill.chapter_role if chapter_skill else guidance.category,
+                "task_types": chapter_skill.task_types if chapter_skill else ["范围界定", "内容组织", "证据核验", "缺项提示"],
+                "required_inputs": chapter_skill.required_inputs if chapter_skill else guidance.focus_points,
+                "control_loops": chapter_skill.control_loops if chapter_skill else ["来源输入 -> 正文组织 -> 覆盖检查 -> 缺项提示"],
+                "domain_variants": chapter_skill.domain_variants if chapter_skill else [],
             },
             "chapter_writing_skill": dump_model(chapter_skill) if chapter_skill else None,
+            "generation_plan": generation_plan.model_dump(),
             "readiness": {
                 "can_generate": bool(source_candidates),
+                "has_source_candidates": bool(source_candidates),
+                "plan_confirmed": plan_confirmed,
                 "message": (
-                    "已找到投标候选来源，可开始生成；正式生成时会再次做细粒度证据映射。"
+                    "投标候选来源已就绪，将按当前章节提纲生成。"
+                    if source_candidates and not plan_confirmed
+                    else "投标候选来源和章节范围均已确认，可以开始生成。"
+                    if source_candidates and plan_confirmed
+                    else "已找到投标候选来源，请先确认本章范围和生成要点。"
                     if source_candidates
                     else "尚未找到可靠投标候选来源，建议先调整目录来源规则或补充材料。"
                 ),
             },
         }
+
+    def get_chapter_basis_preferences(self, project_id: str, node_id: str) -> dict:
+        project = self.projects.get(project_id)
+        if _find_node(self._effective_template_tree(project).nodes if self._effective_template_tree(project) else [], node_id) is None:
+            raise KeyError(f"Unknown node_id: {node_id}")
+        raw = project.chapter_basis_preferences.get(node_id, {})
+        return {
+            "node_id": node_id,
+            "atom_ids": list(dict.fromkeys(str(item) for item in raw.get("atom_ids", []) if item)),
+            "excluded_atom_ids": list(dict.fromkeys(str(item) for item in raw.get("excluded_atom_ids", []) if item)),
+            "skill_keys": list(dict.fromkeys(str(item) for item in raw.get("skill_keys", []) if item)),
+            "prompt": str(raw.get("prompt", "")),
+            "updated_at": raw.get("updated_at"),
+        }
+
+    def save_chapter_basis_preferences(self, project_id: str, node_id: str, payload: dict) -> dict:
+        project = self.projects.get(project_id)
+        tree = self._effective_template_tree(project)
+        if _find_node(tree.nodes if tree else [], node_id) is None:
+            raise KeyError(f"Unknown node_id: {node_id}")
+        now = datetime.now().isoformat(timespec="seconds")
+        project.chapter_basis_preferences[node_id] = {
+            "atom_ids": list(dict.fromkeys(str(item) for item in payload.get("atom_ids", []) if item)),
+            "excluded_atom_ids": list(dict.fromkeys(str(item) for item in payload.get("excluded_atom_ids", []) if item)),
+            "skill_keys": list(dict.fromkeys(str(item) for item in payload.get("skill_keys", []) if item)),
+            "prompt": str(payload.get("prompt", "")).strip(),
+            "updated_at": now,
+        }
+        self.projects.save(project)
+        return self.get_chapter_basis_preferences(project_id, node_id)
+
+    def save_chapter_writing_skill(self, project_id: str, node_id: str, payload: dict) -> dict:
+        project = self.projects.get(project_id)
+        tree = self._effective_template_tree(project)
+        node = _find_node(tree.nodes if tree else [], node_id)
+        if node is None:
+            raise KeyError(f"Unknown node_id: {node_id}")
+        current = self._load_chapter_writing_skill(project_id, node_id)
+        if current is None:
+            raise ValueError("本章尚未生成章节 Skill，请先生成后再编辑。")
+        try:
+            skill = ChapterWritingSkill.model_validate({**dump_model(current), **payload, "chapter_title": node.title, "generated_by": "user"})
+        except Exception as exc:
+            raise ValueError(f"Skill 格式不完整，请检查 JSON 内容：{exc}") from exc
+        self.artifacts.write_text(project.id, f"writing-skills/{node.id}.json", to_json_text(dump_model(skill)))
+        self.artifacts.write_text(project.id, f"writing-skills/{node.id}.md", render_chapter_writing_skill(skill))
+        return dump_model(skill)
+
+    def save_chapter_generation_plan(self, project_id: str, node_id: str, payload: dict) -> dict:
+        project = self.projects.get(project_id)
+        project.template_tree = self._effective_template_tree(project)
+        node = _find_node(project.template_tree.nodes if project.template_tree else [], node_id)
+        if node is None:
+            raise KeyError(f"Unknown node_id: {node_id}")
+        return self.workspace_store.save_chapter_generation_plan(project_id, node_id, payload)
+
+    def propose_chapter_generation_plan(self, project_id: str, node_id: str, suggestion: str) -> dict:
+        suggestion = suggestion.strip()
+        if not suggestion:
+            raise ValueError("请先说明希望怎样调整本章范围或要点。")
+        preflight = self.preview_chapter_writing_units(project_id, node_id)
+        current = ChapterGenerationPlan.model_validate(preflight["generation_plan"])
+        response = self._structured_llm().complete_json(
+            generation_plan_prompt(
+                plan=current,
+                suggestion=suggestion,
+                source_candidates=preflight.get("source_candidates") or [],
+            ),
+            schema_name="ChapterGenerationPlanProposal",
+        )
+        candidate = validate_saved_plan(
+            {
+                **current.model_dump(),
+                **response,
+                "status": "draft",
+                "source": "ai",
+            },
+            node_id=node_id,
+            title=current.title,
+        )
+        return self.workspace_store.create_chapter_plan_proposal(
+            project_id,
+            node_id,
+            suggestion,
+            candidate,
+            base_fingerprint=current.fingerprint,
+        )
+
+    def propose_chapter_edit(self, project_id: str, node_id: str, suggestion: str) -> dict:
+        suggestion = suggestion.strip()
+        if not suggestion:
+            raise ValueError("请先描述希望怎样修改正文。")
+        workspace = self.workspace_store.get_workspace(project_id, node_id)
+        selected = next(
+            (
+                item for item in workspace.get("versions", [])
+                if item.get("id") == workspace.get("selected_version_id")
+            ),
+            None,
+        )
+        if selected is None or not str(selected.get("markdown") or "").strip():
+            raise ValueError("本章还没有可修改的选用版本，请先生成或保存正文。")
+        base_markdown = str(selected["markdown"])
+        body = _generated_body(base_markdown)
+        plan_context = self.workspace_store.render_chapter_context(project_id, node_id).split("## 用户补充材料", 1)[0].strip()
+        prompt = "\n".join(
+            [
+                "你是施工组织设计章节正文修改助手。本次只修改生成正文，不得改动来源摘要、人工补充和特殊备注。",
+                f"修改要求：{suggestion}",
+                plan_context or "本章没有已保存的结构化提纲；不得新增与章节标题无关的独立主题。",
+                "原生成正文：",
+                body,
+                "输出规则：",
+                "- 只输出修改后的生成正文内容，不输出整章标题、主要来源摘要、人工补充、JSON或解释。",
+                "- 不得新增结构化提纲明确排除的主题，不得把其他独立章节职责并入本章。",
+                "- 新增项目事实、数值、频次、责任主体或审批结论必须来自原文；无依据时保留人工补充提示。",
+                "- 保留原文已有且有依据的技术事实，避免为了润色删除关键参数和施工接口。",
+            ]
+        )
+        revised_body = _sanitize_generated_body(self.llm.complete(prompt))
+        generation_plan = workspace.get("generation_plan")
+        revised_body = _merge_partial_generated_body(body, revised_body, generation_plan)
+        revised_markdown = _replace_generated_body(base_markdown, revised_body)
+        proposal = self.workspace_store.propose_chapter_edit(
+            project_id,
+            node_id,
+            suggestion,
+            revised_markdown,
+            display_markdown=revised_body,
+        )
+        return proposal
 
     def generate_chapter_writing_skill_for_node(self, project_id: str, node_id: str, *, force: bool = True) -> dict:
         project = self._ensure_generation_context(self.projects.get(project_id))
@@ -2060,7 +2345,7 @@ class GenerationPipeline:
             actions = [{"id": "generate_outline", "label": "生成项目目录", "target_step": "outline"}]
         elif len(generated) < len(leaves):
             stage = "chapter"
-            headline = f"目录已就绪，{len(grounded)}/{len(leaves)} 个叶子章节已有投标来源候选。"
+            headline = f"目录已生成，已完成 {len(generated)}/{len(leaves)} 个章节；其中 {len(grounded)}/{len(leaves)} 个章节已有投标来源候选。"
             next_node = next((node for node in leaves if node.id not in {task.node_id for task in generated}), None)
             actions = [
                 {
@@ -2935,9 +3220,34 @@ class GenerationPipeline:
         if self.workspace_store is None:
             return ""
         try:
-            return self.workspace_store.render_chapter_context(project_id, node_id)
+            context = self.workspace_store.render_chapter_context(project_id, node_id)
+            preferences = self.get_chapter_basis_preferences(project_id, node_id)
+            if preferences["prompt"]:
+                context += f"\n\n【本项目本章依据补充提示】\n{preferences['prompt']}\n仅作为用户写作意图，项目事实仍以投标证据为准。"
+            if preferences["skill_keys"]:
+                context += f"\n【用户选定写作技巧】\n{'、'.join(preferences['skill_keys'])}"
+            return context
         except Exception:
             return ""
+
+    def recommend_chapter_groups(self, project_id: str) -> dict:
+        project = self.projects.get(project_id)
+        tree = self._effective_template_tree(project)
+        if tree is None:
+            raise ValueError("请先生成或加载项目目录")
+        recommendation = recommend_chapter_groups(
+            project_id=project_id,
+            nodes=list(iter_template_nodes(tree.nodes)),
+            llm=self._structured_llm(),
+        )
+        artifact_path = self.artifacts.write_text(
+            project_id,
+            "control/chapter-group-recommendation.json",
+            to_json_text(dump_model(recommendation)),
+        )
+        payload = dump_model(recommendation)
+        payload["artifact_path"] = artifact_path
+        return payload
 
     def _load_writing_unit_checkpoint(self, project_id: str, node_id: str) -> dict[str, str]:
         root = getattr(self.artifacts, "root", None)
@@ -2964,7 +3274,7 @@ class GenerationPipeline:
         path = Path(self.artifacts.root) / project.id / "writing-skills" / f"{node.id}.json"
         if not force:
             cached = self._load_chapter_writing_skill(project.id, node.id)
-            if cached:
+            if cached and cached.version != "1.0":
                 return cached
         skill = generate_chapter_writing_skill(
             node=node,
@@ -2973,6 +3283,8 @@ class GenerationPipeline:
             policy=policy,
             selected_sections=selected_sections,
             llm=self._structured_llm(),
+            reference_skill_context=render_chapter_skills_for_prompt(node),
+            guide_context=_load_writing_guide_context(),
         )
         self.artifacts.write_text(project.id, f"writing-skills/{node.id}.json", to_json_text(dump_model(skill)))
         self.artifacts.write_text(project.id, f"writing-skills/{node.id}.md", render_chapter_writing_skill(skill))
@@ -3064,16 +3376,25 @@ class GenerationPipeline:
                     ]
                 )
             )[:16]
+        preferences = self.get_chapter_basis_preferences(project.id, node.id)
+        excluded_atom_ids = set(preferences["excluded_atom_ids"])
         query = AtomRetrievalQuery(
             project_name=(profile.project_name if profile and profile.project_name else project.name),
             project_type=(profile.project_type if profile and profile.project_type else ""),
             chapter_title=(f"{node.title} / {writing_unit.title}" if writing_unit else node.title),
-            evidence_summary=evidence_summary,
+            evidence_summary=(evidence_summary + "\n" + preferences["prompt"]).strip(),
             writing_topics=writing_topics,
             top_k=3 if writing_unit else 5,
         )
         try:
-            return retrieve_reference_atoms(atoms=atoms, query=query, llm=self._structured_llm())
+            candidates = retrieve_reference_atoms(atoms=atoms, query=query, llm=self._structured_llm())
+            by_id = {atom.id: atom for atom in atoms}
+            pinned = [
+                AtomRetrievalResult(atom_id=atom_id, score=1.0, match_reason="用户在本章依据页窗中固定选择", prompt_use="优先借鉴工艺组织和控制闭环", atom=by_id[atom_id])
+                for atom_id in preferences["atom_ids"]
+                if atom_id in by_id and atom_id not in excluded_atom_ids and by_id[atom_id].status.value == "published"
+            ]
+            return [*pinned, *[item for item in candidates if item.atom_id not in excluded_atom_ids and item.atom_id not in {p.atom_id for p in pinned}]]
         except Exception as exc:
             self.artifacts.write_text(
                 project.id,
@@ -3182,10 +3503,19 @@ class GenerationPipeline:
             workspace = self.workspace_store.get_workspace(project_id, node_id)
             supplement_ids = [item["id"] for item in workspace.get("supplements", [])]
             generation_metadata = dict(draft.generation_metadata or {})
+            # A run task is mutable and always reflects the latest generation.
+            # Keep this version's mapping in its own metadata so switching
+            # versions cannot show evidence from a different run.
+            if draft.source_mapping:
+                generation_metadata["source_mapping"] = dump_model(draft.source_mapping)
             generation_metadata["quality_review"] = {
                 "status": draft.validation_status.value,
-                "advisory_only": True,
-                "message": "This version is visible for human review; quality findings suggest possible revision but do not block selection.",
+                "advisory_only": draft.validation_status == TaskStatus.passed,
+                "message": (
+                    "本版本已通过生成门槛并自动选用。"
+                    if draft.validation_status == TaskStatus.passed
+                    else "本版本已保存供审阅，但存在需修订问题，未自动替换当前选用版本。"
+                ),
                 "issues": [dump_model(issue) for issue in draft.validation_issues],
             }
             self.workspace_store.create_chapter_version(
@@ -3198,7 +3528,9 @@ class GenerationPipeline:
                 source_section_ids=draft.source_section_ids,
                 supplement_ids=supplement_ids,
                 created_by="ai",
-                select=True,
+                # AI output is a candidate until the user compares it with
+                # the currently selected version and explicitly adopts it.
+                select=False if source_type in {"ai_generate", "ai_edit"} else draft.validation_status == TaskStatus.passed,
                 source_mapping=draft.source_mapping,
                 generation_metadata=generation_metadata,
                 evidence_audit=dump_model(draft.evidence_audit) if draft.evidence_audit else None,
@@ -3314,6 +3646,69 @@ def _workspace_selected_version_id(workspace_store, project_id: str, node_id: st
     except Exception:
         return None
     return workspace.get("selected_version_id")
+
+
+def _generated_body(markdown: str) -> str:
+    match = re.search(
+        r"^##\s+生成正文\s*$\n(.*?)(?=^##\s+(?:人工补充需补充|特殊备注)\s*$|\Z)",
+        markdown or "",
+        flags=re.M | re.S,
+    )
+    return match.group(1).strip() if match else (markdown or "").strip()
+
+
+def _sanitize_generated_body(markdown: str) -> str:
+    body = _generated_body(markdown)
+    body = re.sub(r"^#\s+.*?$", "", body, flags=re.M)
+    body = re.sub(
+        r"^##\s+(?:主要来源摘要|人工补充需补充|特殊备注)\s*$.*?(?=^##\s+|\Z)",
+        "",
+        body,
+        flags=re.M | re.S,
+    )
+    return body.strip()
+
+
+def _replace_generated_body(markdown: str, body: str) -> str:
+    pattern = re.compile(
+        r"(^##\s+生成正文\s*$\n)(.*?)(?=^##\s+(?:人工补充需补充|特殊备注)\s*$|\Z)",
+        flags=re.M | re.S,
+    )
+    if pattern.search(markdown or ""):
+        return pattern.sub(lambda match: match.group(1) + "\n" + body.strip() + "\n\n", markdown, count=1).strip() + "\n"
+    return (markdown.rstrip() + "\n\n## 生成正文\n\n" + body.strip() + "\n").lstrip()
+
+
+def _merge_partial_generated_body(base_body: str, revised_body: str, generation_plan: dict | None) -> str:
+    """Merge a model's subsection-only edit without deleting untouched chapter units."""
+
+    heading_pattern = re.compile(r"^###\s+(.+?)\s*$\n(.*?)(?=^###\s+|\Z)", flags=re.M | re.S)
+    base_matches = list(heading_pattern.finditer(base_body or ""))
+    revised_matches = list(heading_pattern.finditer(revised_body or ""))
+    if not base_matches or not revised_matches:
+        enabled_items = [
+            item for item in ((generation_plan or {}).get("items") or [])
+            if isinstance(item, dict) and item.get("enabled", True)
+        ]
+        if len(enabled_items) > 1:
+            raise ValueError("AI 修改结果缺少可定位的小节标题，已保留原正文，请缩小要求后重试。")
+        return revised_body.strip()
+
+    def key(value: str) -> str:
+        return re.sub(r"[\s*`#]+", "", value or "")
+
+    base_keys = {key(match.group(1)) for match in base_matches}
+    revised_by_key = {key(match.group(1)): match.group(0).strip() for match in revised_matches}
+    unknown = [match.group(1).strip() for match in revised_matches if key(match.group(1)) not in base_keys]
+    if unknown:
+        raise ValueError("AI 修改结果包含无法定位的新小节：" + "、".join(unknown[:4]) + "。已保留原正文。")
+    if not revised_by_key:
+        raise ValueError("AI 修改结果没有可应用内容，已保留原正文。")
+
+    def replacement(match: re.Match[str]) -> str:
+        return revised_by_key.get(key(match.group(1)), match.group(0).strip()) + "\n\n"
+
+    return heading_pattern.sub(replacement, base_body).strip()
 
 
 def _find_content_node(nodes: list[dict], content_node_id: str) -> dict | None:

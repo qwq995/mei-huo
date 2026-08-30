@@ -24,11 +24,13 @@ def audit_version_generation_metadata(version: dict | None) -> dict:
             json.dumps(metadata, ensure_ascii=False, sort_keys=True),
         ]
     )
-    audits = [
+    generation_plan_audit = _audit_generation_plan(markdown, metadata.get("generation_plan"))
+    plan_controls_scope = generation_plan_audit is not None
+    audits = [] if plan_controls_scope else [
         audit_pattern_organization(markdown, pattern_key=key, applicability_text=applicability)
         for key in pattern_keys[:5]
     ]
-    prompt_card_audits = _audit_prompt_cards(markdown, _metadata_prompt_cards(metadata))
+    prompt_card_audits = [] if plan_controls_scope else _audit_prompt_cards(markdown, _metadata_prompt_cards(metadata))
     actionable = [audit for audit in audits if audit.suggested_action != "accept"]
     actionable_cards = [audit for audit in prompt_card_audits if audit.get("suggested_action") != "accept"]
     requires_llm = [audit for audit in actionable if audit.suggested_action in {"regenerate"}]
@@ -47,23 +49,78 @@ def audit_version_generation_metadata(version: dict | None) -> dict:
         for audit in actionable_cards
         if audit.get("suggested_action") in {"expand_subsections", "request_human_input"}
     )
-    status = "passed" if not actionable and not actionable_cards else "warning"
+    plan_actionable = bool(generation_plan_audit and generation_plan_audit.get("suggested_action") != "accept")
+    if plan_actionable:
+        requires_llm.append(generation_plan_audit)
+    status = "passed" if not actionable and not actionable_cards and not plan_actionable else "warning"
     return {
         "status": status,
-        "issues": [_audit_issue(audit) for audit in actionable] + [_prompt_card_issue(audit) for audit in actionable_cards],
-        "next_actions": _next_actions(actionable) + _prompt_card_next_actions(actionable_cards),
+        "issues": (
+            [_audit_issue(audit) for audit in actionable]
+            + [_prompt_card_issue(audit) for audit in actionable_cards]
+            + ([generation_plan_audit.get("message")] if plan_actionable else [])
+        ),
+        "next_actions": (
+            _next_actions(actionable)
+            + _prompt_card_next_actions(actionable_cards)
+            + (["按已确认章节提纲补齐缺失要点后重新生成或局部修订。"] if plan_actionable else [])
+        ),
         "metrics": {
             "selected_pattern_count": len(pattern_keys),
             "audited_pattern_count": len(audits),
             "prompt_card_count": len(prompt_card_audits),
             "prompt_card_actionable_count": len(actionable_cards),
-            "actionable_count": len(actionable) + len(actionable_cards),
+            "actionable_count": len(actionable) + len(actionable_cards) + (1 if plan_actionable else 0),
             "requires_llm_count": len(requires_llm),
             "requires_user_confirmation_count": len(requires_user),
+            "generation_plan_controlled": 1 if plan_controls_scope else 0,
         },
         "pattern_audits": [dump_model(audit) for audit in audits],
         "prompt_card_audits": prompt_card_audits,
+        "generation_plan_audit": generation_plan_audit,
     }
+
+
+def _audit_generation_plan(markdown: str, plan: object) -> dict | None:
+    if not isinstance(plan, dict) or plan.get("status") != "confirmed":
+        return None
+    body = _normalize_text(_generated_body(markdown))
+    enabled = [item for item in plan.get("items") or [] if isinstance(item, dict) and item.get("enabled", True)]
+    covered: list[str] = []
+    missing: list[str] = []
+    for item in enabled:
+        title = str(item.get("title") or "").strip()
+        points = [str(value).strip() for value in item.get("key_points") or [] if str(value).strip()]
+        candidates = [title, *points]
+        if any(_plan_term_covered(body, candidate) for candidate in candidates):
+            covered.append(title)
+        else:
+            missing.append(title)
+    total = len(covered) + len(missing)
+    coverage = round(len(covered) / total, 4) if total else None
+    suggested = "regenerate" if missing else "accept"
+    message = (
+        "已确认章节提纲仍有未覆盖要点：" + "；".join(missing)
+        if missing
+        else "正文已覆盖已确认章节提纲中的全部启用要点。"
+    )
+    return {
+        "coverage_ratio": coverage,
+        "covered_items": covered,
+        "missing_items": missing,
+        "suggested_action": suggested,
+        "message": message,
+    }
+
+
+def _plan_term_covered(normalized_body: str, value: str) -> bool:
+    normalized = _normalize_text(value)
+    if not normalized:
+        return False
+    if normalized in normalized_body:
+        return True
+    phrases = re.findall(r"[\u4e00-\u9fff]{2,8}", value)
+    return any(_normalize_text(phrase) in normalized_body for phrase in phrases)
 
 
 def _missing_result() -> dict:

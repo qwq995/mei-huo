@@ -13,11 +13,13 @@ from coalplan.domain.templates import TemplateNode, TemplateTree
 
 
 class ChapterSkillLibraryTest(unittest.TestCase):
-    def test_loads_five_specialized_skills(self) -> None:
+    def test_loads_cross_domain_specialized_skills(self) -> None:
         skills = load_chapter_skills()
-        self.assertEqual(5, len(skills))
+        self.assertGreaterEqual(len(skills), 10)
         self.assertIn("construction-safety-chapter", skills)
         self.assertIn("construction-craft-chapter", skills)
+        self.assertIn("construction-overview-chapter", skills)
+        self.assertIn("construction-calculation-drawing-chapter", skills)
 
     def test_matches_one_primary_skill_by_chapter_title(self) -> None:
         safety = match_chapter_skills(title="职业健康安全管理", context="危险源和应急预案")

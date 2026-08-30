@@ -35,12 +35,14 @@ API 文档默认在 `http://127.0.0.1:8010/docs`。
 ## Run Web
 
 ```powershell
-cd src/coalplan/web
+cd src/coalplan/web1.0
 npm install
 npm run dev
 ```
 
-前端默认在 `http://127.0.0.1:5174`。
+当前工作台前端默认在 `http://127.0.0.1:5173`。`src/coalplan/web` 仅保留为历史原型，不作为当前功能入口。
+
+仓库目录职责、运行数据边界和常用命令见 [`docs/project-structure.md`](docs/project-structure.md)。
 
 ## Demo API Flow
 

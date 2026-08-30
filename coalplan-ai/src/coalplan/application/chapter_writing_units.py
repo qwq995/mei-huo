@@ -11,6 +11,7 @@ from coalplan.domain.reference_library import AtomRetrievalResult
 from coalplan.domain.templates import TemplateNode
 
 from .chapter_writing_guidance import guidance_for_node
+from .chapter_generation_plan import ChapterGenerationPlan
 
 
 MAX_WRITING_UNITS = 4
@@ -41,6 +42,11 @@ def plan_chapter_writing_units(
     node: TemplateNode,
     policy: ChapterGenerationPolicy | None,
 ) -> list[WritingUnitSpec]:
+    saved_plan = _saved_generation_plan(node)
+    if saved_plan is not None:
+        planned = _writing_units_from_saved_plan(node, saved_plan)
+        if planned:
+            return planned
     guidance = guidance_for_node(node)
     target = node.target_word_count or (policy.target_word_count if policy else None) or 700
     policy_topics = list(
@@ -96,6 +102,40 @@ def plan_chapter_writing_units(
                 target=per_unit,
                 sequence=index,
                 pattern_key=guidance.pattern_key,
+            )
+        )
+    return units
+
+
+def _saved_generation_plan(node: TemplateNode) -> ChapterGenerationPlan | None:
+    payload = (node.chapter_summary or {}).get("generation_plan")
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return ChapterGenerationPlan.model_validate(payload)
+    except ValueError:
+        return None
+
+
+def _writing_units_from_saved_plan(node: TemplateNode, plan: ChapterGenerationPlan) -> list[WritingUnitSpec]:
+    enabled = sorted((item for item in plan.items if item.enabled), key=lambda item: item.sort_order)[:8]
+    if not enabled:
+        return []
+    fallback_target = max(MIN_UNIT_TARGET, int((node.target_word_count or 700) / len(enabled)))
+    units: list[WritingUnitSpec] = []
+    for index, item in enumerate(enabled, start=1):
+        topics = _dedupe_topics([item.title, *item.key_points])
+        target = item.target_word_count or fallback_target
+        units.append(
+            WritingUnitSpec(
+                unit_id=item.item_id,
+                title=item.title,
+                objective=item.purpose or f"完成“{node.title}”中“{item.title}”对应的可直接入稿内容。",
+                target_word_count=max(MIN_UNIT_TARGET, min(MAX_UNIT_TARGET, int(target))),
+                writing_topics=topics[:8] or [item.title],
+                evidence_terms=_evidence_terms([item.evidence_requirement, *topics]),
+                content_functions=[item.output_form] if item.output_form else _content_functions(topics, "general"),
+                sequence=index,
             )
         )
     return units

@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from "react"
+import { forwardRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type TextareaHTMLAttributes } from "react"
 import { AlertTriangle, Loader2, X } from "lucide-react"
 import { cn, statusLabel, statusTone, type StatusTone } from "@/lib/utils"
 
@@ -35,12 +35,14 @@ export function Button({
   className,
   children,
   disabled,
+  type = "button",
   ...props
 }: ButtonProps) {
   return (
     <button
+      type={type}
       className={cn(
-        "inline-flex items-center justify-center rounded-[var(--radius)] font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-70",
+        "inline-flex items-center justify-center rounded-[var(--radius)] font-medium shadow-sm transition-[background-color,border-color,box-shadow,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background active:translate-y-px disabled:cursor-not-allowed disabled:opacity-70 disabled:shadow-none",
         buttonVariants[variant],
         buttonSizes[size],
         className,
@@ -55,7 +57,7 @@ export function Button({
 }
 
 export function Card({ className, children }: { className?: string; children: ReactNode }) {
-  return <div className={cn("rounded-[var(--radius)] border border-border bg-card", className)}>{children}</div>
+  return <div className={cn("app-card rounded-[var(--radius)] border border-border bg-card", className)}>{children}</div>
 }
 
 const toneStyles: Record<StatusTone, string> = {
@@ -94,7 +96,7 @@ export function TextInput({ className, ...props }: InputHTMLAttributes<HTMLInput
   return (
     <input
       className={cn(
-        "h-10 w-full rounded-[var(--radius)] border border-input bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "h-10 w-full rounded-[var(--radius)] border border-input bg-card/90 px-3 text-sm text-foreground shadow-sm placeholder:text-muted-foreground/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         className,
       )}
       {...props}
@@ -102,17 +104,18 @@ export function TextInput({ className, ...props }: InputHTMLAttributes<HTMLInput
   )
 }
 
-export function TextArea({ className, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+export const TextArea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<HTMLTextAreaElement>>(function TextArea({ className, ...props }, ref) {
   return (
     <textarea
+      ref={ref}
       className={cn(
-        "w-full resize-y rounded-[var(--radius)] border border-input bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "w-full resize-y rounded-[var(--radius)] border border-input bg-card/90 px-3 py-2 text-sm text-foreground shadow-sm placeholder:text-muted-foreground/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         className,
       )}
       {...props}
     />
   )
-}
+})
 
 export function Spinner({ className }: { className?: string }) {
   return <Loader2 className={cn("h-4 w-4 animate-spin text-muted-foreground", className)} />
@@ -132,14 +135,16 @@ export function EmptyState({
   title,
   description,
   action,
+  className,
 }: {
   icon?: ReactNode
   title: string
   description?: string
   action?: ReactNode
+  className?: string
 }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-3 rounded-[var(--radius)] border border-dashed border-border bg-card/50 px-6 py-12 text-center">
+    <div className={cn("flex flex-col items-center justify-center gap-3 rounded-[var(--radius)] border border-dashed border-border bg-card/50 px-6 py-12 text-center", className)}>
       {icon ? <div className="text-muted-foreground">{icon}</div> : null}
       <div>
         <p className="text-sm font-medium text-foreground">{title}</p>
@@ -191,8 +196,8 @@ export function ConfirmDialog({
 }) {
   if (!open) return null
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/35 p-4" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div className="w-full max-w-md rounded-[var(--radius)] border border-border bg-card p-5 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <div className="modal-backdrop fixed inset-0 z-[70] flex items-center justify-center p-4" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="glass-surface-strong w-full max-w-md rounded-[var(--radius)] p-5" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
         <div className="flex items-start gap-3">
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--radius)] bg-[color-mix(in_srgb,var(--color-warning)_14%,transparent)] text-[var(--color-warning)]"><AlertTriangle className="h-5 w-5" /></span>
           <div className="min-w-0 flex-1">

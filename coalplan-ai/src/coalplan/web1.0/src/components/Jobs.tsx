@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Loader2, RefreshCw, RotateCcw, XCircle } from "lucide-react"
-import { createGenerationJob, listGenerationJobs, retryGenerationJob, type GenerationJob, type GenerationJobType } from "@/lib/api"
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Loader2, Pause, Play, RefreshCw, RotateCcw, XCircle } from "lucide-react"
+import { createGenerationJob, listGenerationJobs, pauseGenerationJob, retryGenerationJob, type GenerationJob, type GenerationJobType } from "@/lib/api"
 import { Button } from "@/components/ui"
 import { cn, formatDateTime } from "@/lib/utils"
 import { useToast } from "@/components/Toast"
@@ -11,11 +11,12 @@ type JobsContextValue = {
   activeJob: GenerationJob | null
   startJob: (type: GenerationJobType, payload?: Record<string, unknown>) => Promise<GenerationJob>
   retryJob: (jobId: string) => Promise<GenerationJob>
+  pauseJob: (jobId: string) => Promise<GenerationJob>
   refresh: () => Promise<void>
 }
 
 const JobsContext = createContext<JobsContextValue | null>(null)
-const terminal = new Set(["completed", "partial", "failed", "interrupted"])
+const terminal = new Set(["completed", "partial", "failed", "interrupted", "paused"])
 
 export function JobsProvider({ projectId, children }: { projectId: string | null; children: React.ReactNode }) {
   const toast = useToast()
@@ -73,7 +74,14 @@ export function JobsProvider({ projectId, children }: { projectId: string | null
     return job
   }, [projectId])
 
-  const value = useMemo(() => ({ jobs, loading, activeJob: jobs.find((job) => !terminal.has(job.status)) ?? null, startJob, retryJob, refresh }), [jobs, loading, startJob, retryJob, refresh])
+  const pauseJob = useCallback(async (jobId: string) => {
+    if (!projectId) throw new Error("请先选择项目")
+    const job = await pauseGenerationJob(projectId, jobId)
+    setJobs((current) => [job, ...current.filter((item) => item.job_id !== job.job_id)])
+    return job
+  }, [projectId])
+
+  const value = useMemo(() => ({ jobs, loading, activeJob: jobs.find((job) => !terminal.has(job.status)) ?? null, startJob, retryJob, pauseJob, refresh }), [jobs, loading, startJob, retryJob, pauseJob, refresh])
   return <JobsContext.Provider value={value}>{children}</JobsContext.Provider>
 }
 
@@ -84,7 +92,7 @@ export function useJobs() {
 }
 
 export function TaskCenter() {
-  const { jobs, loading, activeJob, retryJob, refresh } = useJobs()
+  const { jobs, loading, activeJob, pauseJob, retryJob, refresh } = useJobs()
   const toast = useToast()
   const [open, setOpen] = useState(false)
   if (!jobs.length && !loading) return null
@@ -107,7 +115,7 @@ export function TaskCenter() {
             <Button size="icon" variant="ghost" onClick={() => void refresh()} aria-label="刷新任务"><RefreshCw className="h-4 w-4" /></Button>
           </div>
           <ul className="max-h-[420px] space-y-2 overflow-y-auto">
-            {jobs.map((job) => <JobRow key={job.job_id} job={job} onRetry={async () => { try { await retryJob(job.job_id); toast.success("已重新提交任务") } catch (err) { toast.error(err instanceof Error ? err.message : "重试失败") } }} />)}
+            {jobs.map((job) => <JobRow key={job.job_id} job={job} onPause={async () => { try { await pauseJob(job.job_id); toast.success("已收到暂止请求，将在当前章节完成后暂停") } catch (err) { toast.error(err instanceof Error ? err.message : "暂止失败") } }} onRetry={async () => { try { await retryJob(job.job_id); toast.success(job.status === "paused" ? "已从保留进度继续生成" : "已重新提交任务") } catch (err) { toast.error(err instanceof Error ? err.message : "重试失败") } }} />)}
           </ul>
         </div>
       ) : null}
@@ -115,7 +123,7 @@ export function TaskCenter() {
   )
 }
 
-function JobRow({ job, onRetry }: { job: GenerationJob; onRetry: () => Promise<void> }) {
+function JobRow({ job, onPause, onRetry }: { job: GenerationJob; onPause: () => Promise<void>; onRetry: () => Promise<void> }) {
   const running = !terminal.has(job.status)
   const Icon = running ? Loader2 : job.status === "completed" ? CheckCircle2 : job.status === "partial" ? AlertTriangle : XCircle
   const progress = job.total > 0 ? Math.min(100, Math.round(job.current / job.total * 100)) : null
@@ -132,12 +140,15 @@ function JobRow({ job, onRetry }: { job: GenerationJob; onRetry: () => Promise<v
           {running && progress !== null ? <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary transition-[width]" style={{ width: `${progress}%` }} /></div> : null}
           {job.error ? <details className="mt-2 text-[11px] text-[var(--color-danger)]"><summary className="cursor-pointer">查看失败详情</summary><p className="mt-1 break-words">{job.error}</p></details> : null}
         </div>
-        {["failed", "interrupted", "partial"].includes(job.status) ? <Button size="icon" variant="ghost" onClick={() => void onRetry()} aria-label="重试任务"><RotateCcw className="h-4 w-4" /></Button> : null}
+        <div className="flex shrink-0 items-center gap-1">
+          {job.job_type === "project_generation" && running ? <Button size="icon" variant="ghost" onClick={() => void onPause()} aria-label="暂止全量生成" title="暂止全量生成"><Pause className="h-4 w-4" /></Button> : null}
+          {["failed", "interrupted", "partial", "paused"].includes(job.status) ? <Button size="icon" variant="ghost" onClick={() => void onRetry()} aria-label={job.status === "paused" ? "继续生成" : "重试任务"} title={job.status === "paused" ? "继续生成" : "重试任务"}>{job.status === "paused" ? <Play className="h-4 w-4" /> : <RotateCcw className="h-4 w-4" />}</Button> : null}
+        </div>
       </div>
     </li>
   )
 }
 
 export function jobLabel(type: GenerationJobType) {
-  return ({ directory_generation: "目录生成", chapter_generation: "章节生成", child_chapter_generation: "子章节生成", project_generation: "全量生成", quality_audit: "质量审查", compliance_review: "规范审查", outline_proposal: "目录调整建议", outline_refine: "目录精修建议", reference_import: "优秀施组切分", reference_import_batch: "批量切分优秀施组" } as const)[type]
+  return ({ directory_generation: "目录生成", chapter_generation: "章节生成", child_chapter_generation: "子章节生成", project_generation: "全量生成", chapter_group_recommendation: "联合生成建议", chapter_batch_generation: "批量章节更新", supplement_batch_ai_fill: "AI补全建议", quality_audit: "质量审查", compliance_review: "规范审查", outline_proposal: "目录调整建议", outline_refine: "目录精修建议", chapter_plan_proposal: "章节提纲优化", chapter_edit_proposal: "正文修改建议", reference_import: "优秀施组切分", reference_import_batch: "批量切分优秀施组" } as const)[type]
 }

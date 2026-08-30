@@ -1,6 +1,6 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { FileStack, FileText, FolderKanban, Layers, Plus, Search, Trash2 } from "lucide-react"
-import { createProject, deleteProject, listProjects, listTemplates, recommendOutlineTemplates, type OutlineTemplateRecommendation, type ProjectResponse, type TemplateSummary } from "@/lib/api"
+import { createProject, deleteProject, listProjects, listTemplates, recommendOutlineTemplates, updateProjectMetadata, type OutlineTemplateRecommendation, type ProjectResponse, type TemplateSummary } from "@/lib/api"
 import { useAsyncData } from "@/lib/useAsync"
 import { useToast } from "@/components/Toast"
 import { Button, Card, ConfirmDialog, EmptyState, LoadingBlock, SectionTitle, TextInput } from "@/components/ui"
@@ -26,6 +26,27 @@ export function ProjectStep({
   const [creating, setCreating] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<ProjectResponse | null>(null)
+  const [currentName, setCurrentName] = useState("")
+  const [currentTags, setCurrentTags] = useState("")
+  const [savingMetadata, setSavingMetadata] = useState(false)
+
+  useEffect(() => {
+    setCurrentName(current?.name ?? "")
+    setCurrentTags((current?.project_tags ?? []).join("、"))
+  }, [current])
+
+  const handleSaveMetadata = async () => {
+    if (!current) return
+    if (!currentName.trim()) { toast.error("项目名称不能为空"); return }
+    setSavingMetadata(true)
+    try {
+      const updated = await updateProjectMetadata(current.project_id, { name: currentName.trim(), project_tags: currentTags.split(/[,，、\s]+/).map((item) => item.trim()).filter(Boolean) })
+      onSelect(updated)
+      await projects.reload()
+      toast.success("项目名称和标签已保存")
+    } catch (err) { toast.error(err instanceof Error ? err.message : "保存项目资料失败") }
+    finally { setSavingMetadata(false) }
+  }
 
   const handleCreate = async () => {
     if (!name.trim()) {
@@ -83,8 +104,8 @@ export function ProjectStep({
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
-      <Card className="p-5">
+    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px] xl:gap-6">
+      <Card className="min-w-0 p-4 sm:p-5">
         <SectionTitle
           title="工程项目"
           description="打开已有项目，或从模板新建一个可持久化的生成工作区。"
@@ -107,9 +128,9 @@ export function ProjectStep({
                 const selected = current?.project_id === p.project_id
                 return (
                   <li key={p.project_id}>
-                    <div className={cn("group flex items-center gap-4 rounded-[var(--radius)] border p-3.5 transition-colors", selected ? "border-primary/40 bg-primary/[0.05]" : "border-border bg-card hover:bg-muted/40")}>
+                    <div className={cn("group flex items-center gap-3 rounded-[var(--radius)] border p-3 transition-colors sm:gap-4 sm:p-3.5", selected ? "border-primary/40 bg-primary/[0.05]" : "border-border bg-card hover:bg-muted/40")}>
                       <button onClick={() => onSelect(p)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-                        <span className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-[var(--radius)]", selected ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground")}>
+                        <span className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--radius)] sm:h-10 sm:w-10", selected ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground")}>
                           <FolderKanban className="h-5 w-5" />
                         </span>
                         <span className="min-w-0">
@@ -130,7 +151,7 @@ export function ProjectStep({
                           </span>
                         </span>
                       </button>
-                      <div className="flex items-center gap-2">
+                      <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
                         {selected ? (
                           <span className="rounded-full bg-accent/15 px-2.5 py-0.5 text-xs font-medium text-accent">当前</span>
                         ) : (
@@ -158,7 +179,16 @@ export function ProjectStep({
         </div>
       </Card>
 
-      <Card className="h-fit p-5">
+      <div className="flex min-w-0 flex-col gap-4">
+      {current ? <Card className="min-w-0 h-fit p-4 sm:p-5">
+        <SectionTitle title="当前项目资料" description="名称和标签会保存到项目数据库，后续生成与目录推荐会继续使用。" />
+        <div className="mt-4 flex flex-col gap-3">
+          <div><label className="mb-1.5 block text-xs font-medium text-muted-foreground">项目名称</label><TextInput value={currentName} onChange={(e) => setCurrentName(e.target.value)} /></div>
+          <div><label className="mb-1.5 block text-xs font-medium text-muted-foreground">项目标签</label><TextInput value={currentTags} onChange={(e) => setCurrentTags(e.target.value)} placeholder="用空格或逗号分隔" /></div>
+          <Button onClick={() => void handleSaveMetadata()} loading={savingMetadata} icon={<FileStack className="h-4 w-4" />}>保存项目资料</Button>
+        </div>
+      </Card> : null}
+      <Card className="min-w-0 h-fit p-4 sm:p-5">
         <SectionTitle title="新建项目" description="模板只控制结构，项目事实仍来自上传的投标文档和人工补充。" />
         <div className="mt-4 flex flex-col gap-4">
           <div>
@@ -180,7 +210,7 @@ export function ProjectStep({
             ) : !templates.data?.length ? (
               <div className="rounded-[var(--radius)] border border-dashed border-border p-3 text-xs text-muted-foreground">暂无可用模板</div>
             ) : (
-              <div className="flex max-h-72 flex-col gap-2 overflow-y-auto pr-1">
+              <div className="flex max-h-56 flex-col gap-2 overflow-y-auto pr-1 sm:max-h-72">
                 {templates.data.map((t) => {
                   const checked = (templateId || templates.data?.[0]?.template_id) === t.template_id
                   return (
@@ -207,6 +237,7 @@ export function ProjectStep({
           </Button>
         </div>
       </Card>
+      </div>
       <ConfirmDialog
         open={Boolean(deleteTarget)}
         title="删除工程项目"
