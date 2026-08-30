@@ -4,8 +4,10 @@ import {
   applyChapterProposal,
   createManualVersion,
   getChapterGenerationPreflight,
+  generateChapterWritingSkill,
   getChapter,
   getSourceSection,
+  listReferenceAtoms,
   listOutlineNodes,
   listChapterTasks,
   listVersions,
@@ -15,6 +17,8 @@ import {
   type ChapterResponse,
   type ChapterGenerationPreflight,
   type SourceSection,
+  type SourceEvidenceSpan,
+  type ReferenceAtomDetail,
   type ChapterVersion,
   type ChapterTaskSummary,
   type OutlineNode,
@@ -202,7 +206,7 @@ function ChapterWorkspace({ project, node, nodes, onSelect }: { project: Project
 
       <div className="grid gap-5 xl:grid-cols-[1fr_340px]">
         <div className="flex min-w-0 flex-col gap-5">
-          <GenerationBasisPanel preflight={preflight.data} loading={preflight.loading} />
+          <GenerationBasisPanel projectId={projectId} preflight={preflight.data} loading={preflight.loading} />
           <SourcePanel projectId={projectId} chapter={chapter.data} loading={chapter.loading} />
           {chapter.loading ? (
             <Card className="p-5">
@@ -230,7 +234,55 @@ function ChapterWorkspace({ project, node, nodes, onSelect }: { project: Project
   )
 }
 
-function GenerationBasisPanel({ preflight, loading }: { preflight: ChapterGenerationPreflight | null; loading: boolean }) {
+function GenerationBasisPanel({ projectId, preflight, loading }: { projectId: string; preflight: ChapterGenerationPreflight | null; loading: boolean }) {
+  const toast = useToast()
+  const [openGroup, setOpenGroup] = useState<string | null>(null)
+  const [sourceSection, setSourceSection] = useState<SourceSection | null>(null)
+  const [atom, setAtom] = useState<ReferenceAtomDetail | null>(null)
+  const [skill, setSkill] = useState<{ title: string; content: string[] } | null>(null)
+  const [loadingDetailId, setLoadingDetailId] = useState<string | null>(null)
+  const [chapterSkill, setChapterSkill] = useState<Record<string, unknown> | null>(preflight?.chapter_writing_skill ?? null)
+  const [skillLoading, setSkillLoading] = useState(false)
+
+  useEffect(() => setChapterSkill(preflight?.chapter_writing_skill ?? null), [preflight?.chapter_writing_skill])
+
+  const openSource = async (sectionId: string) => {
+    setLoadingDetailId(sectionId)
+    try {
+      setSourceSection(await getSourceSection(projectId, sectionId))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "读取来源内容失败")
+    } finally {
+      setLoadingDetailId(null)
+    }
+  }
+
+  const openAtom = async (atomId: string) => {
+    setLoadingDetailId(atomId)
+    try {
+      const match = (await listReferenceAtoms()).find((item) => item.id === atomId)
+      if (!match) throw new Error("未找到该原子要素")
+      setAtom(match)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "读取原子内容失败")
+    } finally {
+      setLoadingDetailId(null)
+    }
+  }
+
+  const generateSkill = async () => {
+    setSkillLoading(true)
+    try {
+      if (!preflight) return
+      setChapterSkill(await generateChapterWritingSkill(projectId, preflight.node_id))
+      toast.success("章节专属写作 Skill 已生成")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "生成章节 Skill 失败")
+    } finally {
+      setSkillLoading(false)
+    }
+  }
+
   if (loading) {
     return (
       <Card className="p-5">
@@ -257,6 +309,11 @@ function GenerationBasisPanel({ preflight, loading }: { preflight: ChapterGenera
           role="决定本项目能写哪些事实"
           count={preflight.source_candidates.length}
           lines={preflight.source_candidates.map((item) => item.title_path.join(" / "))}
+          items={preflight.source_candidates.map((item) => ({ id: item.section_id, label: item.title_path.join(" / "), summary: item.snippet }))}
+          itemsOpen={openGroup === "source"}
+          onToggleItems={() => setOpenGroup((value) => value === "source" ? null : "source")}
+          onOpenItem={(item) => void openSource(item.id)}
+          loadingItemId={loadingDetailId}
           empty="尚无候选来源"
         />
         <BasisColumn
@@ -265,6 +322,11 @@ function GenerationBasisPanel({ preflight, loading }: { preflight: ChapterGenera
           role="补充工序与控制闭环，不迁移参数"
           count={preflight.reference_atom_candidates.length}
           lines={preflight.reference_atom_candidates.map((item) => `${item.process || item.title_path[item.title_path.length - 1] || "未标注工艺"} · ${item.project_name}`)}
+          items={preflight.reference_atom_candidates.map((item) => ({ id: item.atom_id, label: item.title_path.join(" / ") || item.process || "未标注原子", summary: `${item.project_name} · ${item.process || "未标注工艺"} · 质量评分 ${(item.quality_score * 100).toFixed(0)}%` }))}
+          itemsOpen={openGroup === "atom"}
+          onToggleItems={() => setOpenGroup((value) => value === "atom" ? null : "atom")}
+          onOpenItem={(item) => void openAtom(item.id)}
+          loadingItemId={loadingDetailId}
           empty="本章不强行使用原子"
         />
         <BasisColumn
@@ -273,8 +335,24 @@ function GenerationBasisPanel({ preflight, loading }: { preflight: ChapterGenera
           role="控制结构与表达，不提供事实"
           count={preflight.writing_skill.matched_skill_keys.length || 1}
           lines={preflight.writing_skill.structure}
+          items={preflight.writing_skill.matched_skill_keys.map((key) => ({ id: key, label: key, summary: preflight.writing_skill.structure.join("；") }))}
+          itemsOpen={openGroup === "skill"}
+          onToggleItems={() => setOpenGroup((value) => value === "skill" ? null : "skill")}
+          onOpenItem={(item) => { setSkill({ title: item.label, content: preflight.writing_skill.structure }); setOpenGroup("skill") }}
           empty="使用通用章节组织规则"
         />
+      </div>
+      <div className="border-t border-border px-5 py-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold text-foreground">章节专属 AI Writing Skill</p>
+            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">根据项目概况、全局重点和本章来源生成的写作指挥规则，用于控制要点覆盖、组织顺序和事实边界。</p>
+          </div>
+          <Button size="sm" variant="outline" onClick={() => void generateSkill()} loading={skillLoading} icon={<Sparkles className="h-3.5 w-3.5" />}>
+            {chapterSkill ? "刷新章节 Skill" : "生成章节 Skill"}
+          </Button>
+        </div>
+        {chapterSkill ? <ChapterSkillSummary skill={chapterSkill} /> : <p className="mt-3 rounded border border-dashed border-border px-3 py-2 text-[11px] text-muted-foreground">尚未生成章节专属 Skill。正式生成章节时会自动创建。</p>}
       </div>
       <div className="border-t border-border px-5 py-4">
         <p className="flex items-center gap-2 text-xs font-semibold text-foreground">
@@ -293,8 +371,34 @@ function GenerationBasisPanel({ preflight, loading }: { preflight: ChapterGenera
           ))}
         </div>
       </div>
+      {sourceSection ? <SourceSectionModal section={sourceSection} focusedEvidence={null} onClose={() => setSourceSection(null)} /> : null}
+      {atom ? <BasisDetailModal title={atom.title_path.join(" / ")} subtitle={`${atom.project_name} · ${atom.process || "未标注工艺"} · ${atom.status}`} content={atom.content} meta={`原子 ${atom.id} · 原文第 ${atom.start_line}-${atom.end_line} 行`} onClose={() => setAtom(null)} /> : null}
+      {skill ? <BasisDetailModal title={skill.title} subtitle="写作技巧 · 仅用于章节结构与表达" content={skill.content.join("\n")} meta="写作规则不提供项目事实" onClose={() => setSkill(null)} /> : null}
     </Card>
   )
+}
+
+function ChapterSkillSummary({ skill }: { skill: Record<string, unknown> }) {
+  const list = (value: unknown) => Array.isArray(value) ? value.filter(Boolean).map(String) : []
+  const coverage = Array.isArray(skill.coverage_plan) ? skill.coverage_plan as Array<Record<string, unknown>> : []
+  return <div className="mt-3 grid gap-2 sm:grid-cols-2">
+    <div className="rounded border border-primary/15 bg-primary/[0.03] px-3 py-2 sm:col-span-2"><p className="text-[10px] font-medium text-primary">章节任务</p><p className="mt-1 text-xs leading-relaxed text-foreground">{String(skill.mission || "围绕当前章节组织可验证的施组内容")}</p></div>
+    <div className="rounded border border-border px-3 py-2"><p className="text-[10px] font-medium text-muted-foreground">组织逻辑</p><ul className="mt-1 space-y-1">{list(skill.organization_logic).slice(0, 5).map((item) => <li key={item} className="text-[11px] leading-relaxed text-foreground">{item}</li>)}</ul></div>
+    <div className="rounded border border-border px-3 py-2"><p className="text-[10px] font-medium text-muted-foreground">要点覆盖</p><ul className="mt-1 space-y-1">{coverage.slice(0, 6).map((item, index) => <li key={`${String(item.topic)}-${index}`} className="text-[11px] leading-relaxed text-foreground">{String(item.topic || "未命名要点")}：{String(item.purpose || "按章节职责展开")}</li>)}</ul></div>
+    <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 sm:col-span-2"><p className="text-[10px] font-medium text-amber-800">生成约束</p><p className="mt-1 text-[11px] leading-relaxed text-amber-900">{[...list(skill.evidence_rules), ...list(skill.fact_boundary_rules), ...list(skill.avoid)].slice(0, 5).join("；") || "项目事实必须回到投标证据或人工确认"}</p></div>
+  </div>
+}
+
+function BasisDetailModal({ title, subtitle, meta, content, onClose }: { title: string; subtitle: string; meta: string; content: string; onClose: () => void }) {
+  return <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/35 p-4">
+    <div className="flex max-h-[86vh] w-[min(900px,96vw)] flex-col rounded-[var(--radius)] border border-border bg-card shadow-2xl">
+      <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
+        <div className="min-w-0"><p className="truncate text-sm font-semibold text-foreground">{title}</p><p className="mt-1 text-xs text-muted-foreground">{subtitle}</p><p className="mt-1 text-[10px] text-primary">{meta}</p></div>
+        <button onClick={onClose} className="rounded p-1 text-muted-foreground hover:bg-muted" aria-label="关闭依据详情"><X className="h-4 w-4" /></button>
+      </div>
+      <pre className="flex-1 overflow-auto whitespace-pre-wrap break-words p-5 text-[13px] leading-relaxed text-foreground">{content || "暂无可显示内容"}</pre>
+    </div>
+  </div>
 }
 
 function BasisColumn({
@@ -303,6 +407,11 @@ function BasisColumn({
   role,
   count,
   lines,
+  items,
+  itemsOpen,
+  onToggleItems,
+  onOpenItem,
+  loadingItemId,
   empty,
 }: {
   icon: React.ReactNode
@@ -310,13 +419,34 @@ function BasisColumn({
   role: string
   count: number
   lines: string[]
+  items?: Array<{ id: string; label: string; summary: string }>
+  itemsOpen?: boolean
+  onToggleItems?: () => void
+  onOpenItem?: (item: { id: string; label: string; summary: string }) => void
+  loadingItemId?: string | null
   empty: string
 }) {
   return (
     <div className="min-w-0 px-5 py-4">
       <p className="flex items-center gap-2 text-xs font-semibold text-foreground">{icon}{title}<span className="text-muted-foreground">{count}</span></p>
       <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{role}</p>
-      {lines.length ? <details className="mt-2"><summary className="cursor-pointer text-[11px] font-medium text-primary">查看 {lines.length} 项匹配依据</summary><ul className="mt-2 max-h-36 space-y-1 overflow-y-auto">{lines.map((line, index) => <li key={`${index}-${line}`} className="text-[11px] leading-relaxed text-foreground/80">{line}</li>)}</ul></details> : <p className="mt-2 text-[11px] text-muted-foreground">{empty}</p>}
+      {lines.length ? items?.length && onToggleItems && onOpenItem ? (
+        <>
+          <button type="button" onClick={onToggleItems} className="mt-2 flex items-center gap-1 text-[11px] font-medium text-primary hover:underline">
+            {itemsOpen ? "收起来源列表" : `点击查看 ${items.length} 项来源`}
+            <ChevronRight className={cn("h-3 w-3 transition-transform", itemsOpen && "rotate-90")} />
+          </button>
+          {itemsOpen ? <ul className="mt-2 max-h-56 space-y-1.5 overflow-y-auto pr-1">
+            {items.map((item) => <li key={item.id}>
+              <button type="button" onClick={() => onOpenItem(item)} disabled={Boolean(loadingItemId)} className="w-full rounded border border-border bg-card px-2.5 py-2 text-left hover:border-primary/40 disabled:cursor-wait disabled:opacity-70">
+                <span className="block text-[11px] font-medium leading-relaxed text-foreground">{item.label}</span>
+                {item.summary ? <span className="mt-1 line-clamp-2 block text-[10px] leading-relaxed text-muted-foreground">{item.summary}</span> : null}
+                <span className="mt-1 flex items-center gap-1 text-[10px] text-primary">{loadingItemId === item.id ? "正在读取..." : "点击查看具体内容"}<FileText className="h-3 w-3" /></span>
+              </button>
+            </li>)}
+          </ul> : null}
+        </>
+      ) : <details className="mt-2"><summary className="cursor-pointer text-[11px] font-medium text-primary">查看 {lines.length} 项匹配依据</summary><ul className="mt-2 max-h-36 space-y-1 overflow-y-auto">{lines.map((line, index) => <li key={`${index}-${line}`} className="text-[11px] leading-relaxed text-foreground/80">{line}</li>)}</ul></details> : <p className="mt-2 text-[11px] text-muted-foreground">{empty}</p>}
     </div>
   )
 }
@@ -347,12 +477,14 @@ function SourcePanel({ projectId, chapter, loading }: { projectId: string; chapt
   const mapping = chapter?.source_mapping
   const toast = useToast()
   const [section, setSection] = useState<SourceSection | null>(null)
+  const [focusedEvidence, setFocusedEvidence] = useState<SourceEvidenceSpan | null>(null)
   const [loadingSectionId, setLoadingSectionId] = useState<string | null>(null)
 
-  const openSection = async (sectionId: string) => {
+  const openSection = async (sectionId: string, evidence?: SourceEvidenceSpan | null) => {
     setLoadingSectionId(sectionId)
     try {
       setSection(await getSourceSection(projectId, sectionId))
+      setFocusedEvidence(evidence ?? null)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "读取原文失败")
     } finally {
@@ -363,36 +495,53 @@ function SourcePanel({ projectId, chapter, loading }: { projectId: string; chapt
   return (
     <>
       <Card className="p-5">
-        <SectionTitle title="来源映射" description="这些原文只用于进入提示词和人工追溯；点击按钮单独查看，不混入正文预览或最终成稿。" />
+        <SectionTitle title="来源映射" description="投标原文决定项目事实。先看匹配理由和关键证据，再点击打开全文核对。" />
         {loading ? (
           <LoadingBlock label="加载来源..." />
         ) : !mapping?.matches?.length ? (
           <p className="mt-3 text-xs text-muted-foreground">暂无来源映射。生成本章后会展示匹配章节与证据。</p>
         ) : (
-          <ul className="mt-3 grid gap-2 md:grid-cols-2">
-            {mapping.matches.map((m) => (
-              <li key={`${m.section_id}-${m.usage}`} className="rounded-[var(--radius)] border border-border bg-muted/30 p-3">
-                <p className="truncate text-xs font-semibold text-foreground">{m.title_path.join(" / ")}</p>
-                <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{m.reason}</p>
-                <div className="mt-2 flex items-center justify-between gap-2">
-                  <p className="min-w-0 truncate text-[11px] text-muted-foreground">
-                    {m.section_id} · {m.usage} · {(m.confidence * 100).toFixed(0)}%
-                  </p>
-                  <Button size="sm" variant="outline" loading={loadingSectionId === m.section_id} onClick={() => openSection(m.section_id)} icon={<FileText className="h-3.5 w-3.5" />}>
-                    查看原文
-                  </Button>
-                </div>
-              </li>
-            ))}
-          </ul>
+          <>
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+              <span className="rounded-full bg-primary/10 px-2 py-1 text-primary">{mapping.matches.length} 个匹配章节</span>
+              <span className="rounded-full bg-muted px-2 py-1">{mapping.evidence?.length ?? 0} 条关键证据</span>
+              {mapping.missing_evidence?.length ? <span className="rounded-full bg-amber-100 px-2 py-1 text-amber-800">待补 {mapping.missing_evidence.length} 项</span> : null}
+            </div>
+            <ul className="mt-3 grid gap-2 md:grid-cols-2">
+              {mapping.matches.map((m) => {
+                const evidence = (mapping.evidence ?? []).filter((item) => item.section_id === m.section_id).slice(0, 2)
+                return (
+                  <li key={`${m.section_id}-${m.usage}`} className="rounded-[var(--radius)] border border-border bg-muted/30 p-3">
+                    <p className="truncate text-xs font-semibold text-foreground">{m.title_path.join(" / ")}</p>
+                    <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{m.reason}</p>
+                    <p className="mt-2 text-[11px] text-muted-foreground">{m.usage} · 匹配度 {(m.confidence * 100).toFixed(0)}%</p>
+                    {evidence.length ? <div className="mt-2 space-y-1.5">
+                      {evidence.map((item) => (
+                        <button key={item.evidence_id} type="button" onClick={() => void openSection(m.section_id, item)} className="block w-full rounded border border-primary/15 bg-card px-2.5 py-2 text-left hover:border-primary/40">
+                          <span className="line-clamp-2 text-[11px] leading-relaxed text-foreground">“{item.quote || item.summary || "已匹配证据，打开原文查看"}”</span>
+                          <span className="mt-1 flex items-center gap-1 text-[10px] text-primary"><FileText className="h-3 w-3" />查看这条证据的原文</span>
+                        </button>
+                      ))}
+                    </div> : null}
+                    <div className="mt-2 flex items-center justify-between gap-2 border-t border-border/70 pt-2">
+                      <p className="min-w-0 truncate text-[10px] text-muted-foreground">{m.section_id}</p>
+                      <Button size="sm" variant="outline" loading={loadingSectionId === m.section_id} onClick={() => void openSection(m.section_id)} icon={<FileText className="h-3.5 w-3.5" />}>
+                        打开全文
+                      </Button>
+                    </div>
+                  </li>
+                )
+              })}
+            </ul>
+          </>
         )}
       </Card>
-      {section ? <SourceSectionModal section={section} onClose={() => setSection(null)} /> : null}
+      {section ? <SourceSectionModal section={section} focusedEvidence={focusedEvidence} onClose={() => { setSection(null); setFocusedEvidence(null) }} /> : null}
     </>
   )
 }
 
-function SourceSectionModal({ section, onClose }: { section: SourceSection; onClose: () => void }) {
+function SourceSectionModal({ section, focusedEvidence, onClose }: { section: SourceSection; focusedEvidence: SourceEvidenceSpan | null; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/35 p-4">
       <div className="flex max-h-[86vh] w-[min(980px,96vw)] flex-col rounded-[var(--radius)] border border-border bg-card shadow-2xl">
@@ -402,11 +551,17 @@ function SourceSectionModal({ section, onClose }: { section: SourceSection; onCl
             <p className="mt-1 text-xs text-muted-foreground">
               {section.section_id} · {section.source_file}
             </p>
+            {focusedEvidence ? <p className="mt-1 text-[11px] text-primary">映射证据 {focusedEvidence.evidence_id} · {focusedEvidence.start_line ? `原文第 ${focusedEvidence.start_line}-${focusedEvidence.end_line ?? focusedEvidence.start_line} 行` : "已定位到本节"}</p> : null}
           </div>
           <button onClick={onClose} className="rounded p-1 text-muted-foreground hover:bg-muted" aria-label="关闭原文查看">
             <X className="h-4 w-4" />
           </button>
         </div>
+        {focusedEvidence ? <div className="border-b border-border bg-primary/[0.04] px-5 py-3">
+          <p className="text-[11px] font-medium text-primary">本次匹配引用</p>
+          <blockquote className="mt-1 border-l-2 border-primary/40 pl-3 text-xs leading-relaxed text-foreground">{focusedEvidence.quote || focusedEvidence.summary || "暂无可显示的引用句"}</blockquote>
+          {focusedEvidence.matched_terms?.length ? <p className="mt-1 text-[10px] text-muted-foreground">匹配词：{focusedEvidence.matched_terms.join("、")}</p> : null}
+        </div> : null}
         <pre className="flex-1 overflow-auto whitespace-pre-wrap break-words p-5 font-mono text-[13px] leading-relaxed text-foreground">{section.content}</pre>
       </div>
     </div>

@@ -27,6 +27,7 @@ def init_database(session_factory) -> None:
     Base.metadata.create_all(engine)
     _ensure_lightweight_sqlite_migrations(engine)
     _ensure_standard_search_indexes(engine)
+    _ensure_reference_search_indexes(engine)
 
 
 def _ensure_lightweight_sqlite_migrations(engine) -> None:
@@ -82,4 +83,26 @@ def _ensure_standard_search_indexes(engine) -> None:
             ))
         except Exception:
             # SQLite builds without FTS5 continue through the existing LLM path.
+            return
+
+
+def _ensure_reference_search_indexes(engine) -> None:
+    """Keep document and atom lookup fast as the review library grows."""
+    if engine.dialect.name != "sqlite":
+        return
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if not {"reference_documents", "reference_atoms"}.issubset(tables):
+        return
+    with engine.begin() as connection:
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_reference_documents_project_kind ON reference_documents(project_name, document_kind)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_reference_atoms_document_status ON reference_atoms(document_id, status)"))
+        try:
+            connection.execute(text("CREATE VIRTUAL TABLE IF NOT EXISTS reference_document_search USING fts5(document_id UNINDEXED, search_text)"))
+            connection.execute(text("CREATE VIRTUAL TABLE IF NOT EXISTS reference_atom_search USING fts5(atom_id UNINDEXED, document_id UNINDEXED, search_text)"))
+            connection.execute(text("DELETE FROM reference_document_search"))
+            connection.execute(text("INSERT INTO reference_document_search(document_id, search_text) SELECT id, file_name || ' ' || project_name || ' ' || project_type FROM reference_documents"))
+            connection.execute(text("DELETE FROM reference_atom_search"))
+            connection.execute(text("INSERT INTO reference_atom_search(atom_id, document_id, search_text) SELECT id, document_id, content || ' ' || project_name || ' ' || project_type || ' ' || tags_json FROM reference_atoms"))
+        except Exception:
             return

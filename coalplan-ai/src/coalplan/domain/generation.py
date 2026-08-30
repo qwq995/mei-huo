@@ -67,6 +67,8 @@ class Project(BaseModel):
     id: str = Field(default_factory=lambda: new_id("project"))
     name: str
     template_id: str = "coal_fire"
+    project_tags: list[str] = Field(default_factory=list)
+    selected_outline_template_id: str | None = None
     source_documents: list[SourceDocument] = Field(default_factory=list)
     sections: list[MarkdownSection] = Field(default_factory=list)
     source_toc: SourceToc | None = None

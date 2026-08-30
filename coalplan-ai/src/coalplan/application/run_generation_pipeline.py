@@ -28,6 +28,7 @@ from coalplan.application.generation_control_plan import (
 from coalplan.application.ingest_bid_markdown import ingest_bid_markdown
 from coalplan.application.iteration_plan import build_iteration_plan, render_iteration_plan_markdown
 from coalplan.application.load_template_tree import load_template_tree
+from coalplan.application.outline_template_library import load_outline_template
 from coalplan.application.map_chapter_sources import map_chapter_sources
 from coalplan.application.map_sources_to_template import build_chapter_tasks
 from coalplan.application.merge_chapters import merge_chapters
@@ -62,6 +63,11 @@ from coalplan.application.quality_iteration_learning import (
 )
 from coalplan.application.reference_atom_retrieval import prefilter_reference_atoms, retrieve_reference_atoms
 from coalplan.application.chapter_writing_guidance import guidance_for_node
+from coalplan.application.chapter_writing_skill import (
+    ChapterWritingSkill,
+    generate_chapter_writing_skill,
+    render_chapter_writing_skill,
+)
 from coalplan.application.chapter_writing_units import (
     ChapterWritingUnitContext,
     flatten_reference_atom_results,
@@ -91,6 +97,139 @@ from coalplan.ports.retriever import SourceRetriever
 from coalplan.ports.template_loader import TemplateLoader
 
 
+def _outline_refine_scope(nodes: list[dict], scope_node_id: str | None, scope_mode: str) -> set[str]:
+    if not scope_node_id:
+        return {str(node.get("node_id")) for node in nodes if node.get("node_id")}
+    by_parent: dict[str | None, list[str]] = {}
+    for node in nodes:
+        node_id = node.get("node_id")
+        if node_id:
+            by_parent.setdefault(node.get("parent_id"), []).append(str(node_id))
+    allowed = {scope_node_id}
+    if scope_mode != "node":
+        pending = [scope_node_id]
+        while pending:
+            parent_id = pending.pop()
+            for child_id in by_parent.get(parent_id, []):
+                if child_id not in allowed:
+                    allowed.add(child_id)
+                    pending.append(child_id)
+    return allowed
+
+
+def _outline_refine_prompt(
+    *, suggestion: str, scope_node_id: str | None, scope_mode: str,
+    preserve_top_level: bool, max_changes: int, nodes: list[dict],
+) -> str:
+    compact_nodes = []
+    for node in nodes:
+        compact_nodes.append({
+            "node_id": node.get("node_id"),
+            "title": node.get("title"),
+            "level": node.get("level"),
+            "parent_id": node.get("parent_id"),
+            "enabled": node.get("enabled"),
+            "target_word_count": node.get("target_word_count"),
+            "source_rules": node.get("source_rules", [])[:4],
+            "auto_fill": node.get("auto_fill", [])[:6],
+            "manual_fill": node.get("manual_fill", [])[:6],
+            "special_notes": node.get("special_notes", [])[:4],
+            "summary": (node.get("chapter_summary") or {}).get("overview", ""),
+        })
+    return "\n".join([
+        "你是水电施工组织设计目录审阅 agent。请基于用户的修改意图审阅当前目录，只返回确实需要修改的节点动作。",
+        "不要重新规划完整目录，不要重复返回未改变的节点，不要编造工程量、参数、规范编号或项目事实。",
+        "",
+        f"用户修改意图：{suggestion or '请检查目录结构并提出必要的局部改进。'}",
+        f"调整范围：{scope_mode}；锚定节点：{scope_node_id or '整个目录'}；保留一级目录：{'是' if preserve_top_level else '否'}；最多变更：{max_changes}。",
+        "",
+        "当前可审阅目录（只允许在此范围内操作）：",
+        to_json_text(compact_nodes),
+        "",
+        "输出严格 JSON：",
+        '{"changes":[{"action":"create|update|enable|disable","node_id":"已有节点 ID；create 留空","parent_id":"父节点 ID；create 必填","title":"create 必填，update 可选","level":4,"target_word_count":800,"source_rules":[],"auto_fill":[],"manual_fill":[],"special_notes":[],"reason":"面向工程师的简短理由"}],"overall_reason":"没有变化时说明原因"}',
+        "",
+        "规则：",
+        "- 只输出真正有变化的节点；没有必要修改时 changes 必须为空数组。",
+        "- create 用于补充缺失的可生成子节，不能创建一级节点；node_id 留空，由系统生成。",
+        "- update 只填写需要改变的字段；没有变化的字段不要复制。",
+        "- enable/disable 只改变启用状态；不要删除节点。",
+        "- preserve_top_level=true 时不得修改一级节点。",
+        "- 标题应体现施工对象、工序或控制闭环，避免空泛的“其他”。",
+        "- reason 必须解释与用户意图的关系，不得把模型猜测写成项目事实。",
+    ])
+
+
+def _outline_refine_patches(
+    response: dict, current: list[dict], *, scope_node_id: str | None,
+    scope_mode: str, preserve_top_level: bool, max_changes: int,
+) -> tuple[list[dict], dict]:
+    current_by_id = {str(node.get("node_id")): node for node in current if node.get("node_id")}
+    allowed = _outline_refine_scope(current, scope_node_id, scope_mode)
+    patches: list[dict] = []
+    counts = {"create": 0, "update": 0, "enable": 0, "disable": 0}
+    for change in response.get("changes", []) if isinstance(response, dict) else []:
+        if not isinstance(change, dict):
+            continue
+        action = str(change.get("action") or "update").lower()
+        node_id = str(change.get("node_id")) if change.get("node_id") else None
+        if action == "create":
+            parent_id = change.get("parent_id") or scope_node_id
+            if scope_node_id and parent_id not in allowed:
+                continue
+            if not change.get("title"):
+                continue
+            parent = current_by_id.get(str(parent_id))
+            level = int(change.get("level") or ((parent or {}).get("level") or 1) + 1)
+            if preserve_top_level and level <= 1:
+                continue
+            patch = {
+                "node_id": f"outline_ai_{uuid4().hex[:12]}",
+                "__action": "create",
+                "parent_id": parent_id,
+                "title": str(change["title"]).strip(),
+                "level": level,
+                "enabled": bool(change.get("enabled", True)),
+                "origin": "hybrid",
+                "template_anchor_id": parent.get("template_anchor_id") if parent else parent_id,
+                "source_hints": list(change.get("source_hints") or []),
+                "matched_skill_keys": list(change.get("matched_skill_keys") or []),
+                "source_rules": list(change.get("source_rules") or []),
+                "auto_fill": list(change.get("auto_fill") or []),
+                "manual_fill": list(change.get("manual_fill") or []),
+                "special_notes": list(change.get("special_notes") or []),
+                "chapter_summary": change.get("chapter_summary") or {},
+                "target_word_count": change.get("target_word_count"),
+                "reason": str(change.get("reason") or "补充目录结构。"),
+            }
+            patches.append(patch)
+            counts["create"] += 1
+            continue
+        if not node_id or node_id not in current_by_id or node_id not in allowed:
+            continue
+        existing = current_by_id[node_id]
+        if preserve_top_level and int(existing.get("level") or 0) == 1:
+            continue
+        if action not in {"update", "enable", "disable"}:
+            continue
+        patch = {"node_id": node_id, "__action": action, "reason": str(change.get("reason") or "按用户意图调整目录。")}
+        if action in {"enable", "disable"}:
+            desired = action == "enable"
+            if bool(existing.get("enabled", True)) == desired:
+                continue
+            patch["enabled"] = desired
+        else:
+            for key in ("title", "level", "parent_id", "target_word_count", "source_rules", "auto_fill", "manual_fill", "special_notes", "chapter_summary"):
+                if key in change and change[key] != existing.get(key):
+                    patch[key] = change[key]
+            if not any(key not in {"node_id", "__action", "reason"} for key in patch):
+                continue
+        patches.append(patch)
+        counts[action] += 1
+    patches = patches[:max_changes]
+    return patches, {"total": len(patches), **{f"{key}_count": value for key, value in counts.items()}}
+
+
 class GenerationPipeline:
     def __init__(
         self,
@@ -116,8 +255,22 @@ class GenerationPipeline:
         self.reference_library = reference_library
         self._drafts: dict[str, list[ChapterDraft]] = {}
 
-    def create_project(self, name: str, template_id: str = "coal_fire") -> Project:
-        project = Project(name=name, template_id=template_id)
+    def create_project(
+        self,
+        name: str,
+        template_id: str = "coal_fire",
+        *,
+        project_tags: list[str] | None = None,
+        outline_template_id: str | None = None,
+    ) -> Project:
+        if outline_template_id and load_outline_template(outline_template_id) is None:
+            raise ValueError("所选目录参考模板不存在，请重新加载模板库。")
+        project = Project(
+            name=name,
+            template_id=template_id,
+            project_tags=project_tags or [],
+            selected_outline_template_id=outline_template_id,
+        )
         project = load_template_tree(project, template_id=template_id, loader=self.templates)
         return self.projects.save(project)
 
@@ -151,6 +304,7 @@ class GenerationPipeline:
                 template_tree=base_template_tree,
                 llm=self._structured_llm(),
                 artifacts=self.artifacts,
+                reference_outline=load_outline_template(project.selected_outline_template_id) if project.selected_outline_template_id else None,
             )
             project.template_tree = apply_outline_to_template_tree(base_template_tree, project.outline_plan)
             if self.workspace_store is not None:
@@ -218,43 +372,41 @@ class GenerationPipeline:
         self.artifacts.write_text(project.id, "outline/word_count_targets.md", _render_word_count_targets(estimates))
         return payload
 
-    def propose_ai_outline(self, project_id: str, suggestion: str = "") -> dict:
+    def propose_ai_outline(
+        self, project_id: str, suggestion: str = "", *, scope_node_id: str | None = None,
+        scope_mode: str = "subtree",
+        preserve_top_level: bool = True, max_changes: int = 20, mode: str = "balanced",
+    ) -> dict:
         if self.workspace_store is None:
             raise ValueError("Workspace store is not configured.")
         project = self.projects.get(project_id)
         project = self._ensure_base_context(project)
         if project.template_tree is None or project.project_profile is None or project.source_toc is None:
             raise ValueError("Project directory context is incomplete.")
-        outline = plan_template_outline(
-            project_id=project.id,
-            profile=project.project_profile,
-            toc_items=project.source_toc.items,
-            template_tree=project.template_tree,
-            llm=self._structured_llm(),
-            artifacts=self.artifacts,
+        current_nodes = self.workspace_store.list_outline_nodes(project.id)
+        if not current_nodes:
+            raise ValueError("请先生成目录，再进行局部 AI 优化。")
+        prompt = _outline_refine_prompt(
+            suggestion=suggestion, scope_node_id=scope_node_id, scope_mode=scope_mode,
+            preserve_top_level=preserve_top_level, max_changes=max_changes, nodes=current_nodes,
         )
-        preview_nodes = [
-            {
-                "node_id": node.node_id,
-                "title": node.title,
-                "level": node.level,
-                "parent_id": node.parent_node_id,
-                "enabled": node.enabled,
-                "origin": node.origin,
-                "template_anchor_id": node.template_anchor_id,
-                "source_hints": node.source_hints,
-                "matched_skill_keys": node.matched_skill_keys,
-                "chapter_summary": dump_model(node.chapter_summary),
-                "source_rules": node.main_sources,
-                "auto_fill": node.auto_fill,
-                "manual_fill": node.manual_fill,
-                "special_notes": node.special_notes,
-                "target_word_count": node.target_word_count,
-            }
-            for node in outline.nodes
-        ]
+        try:
+            response = self._structured_llm().complete_json(prompt, schema_name="OutlineRefinementProposal")
+        except Exception as exc:
+            response = {"changes": [], "overall_reason": f"AI 返回不可解析，未生成可应用变更：{exc}"}
+        preview_nodes, change_summary = _outline_refine_patches(
+            response, current_nodes, scope_node_id=scope_node_id, scope_mode=scope_mode,
+            preserve_top_level=preserve_top_level, max_changes=max_changes,
+        )
         text = suggestion or "AI 基于项目概况、投标目录和模板四模块生成目录优化建议。"
-        return self.workspace_store.propose_outline_change(project.id, text, preview_nodes)
+        proposal = self.workspace_store.propose_outline_change(
+            project.id, text, preview_nodes, scope_node_id=scope_node_id,
+            scope_mode=scope_mode,
+            preserve_top_level=preserve_top_level, max_changes=max_changes,
+        )
+        proposal["preview"]["change_summary"] = change_summary
+        proposal["preview"]["overall_reason"] = response.get("overall_reason", "") if isinstance(response, dict) else ""
+        return proposal
 
     def generation_control_plan(self, project_id: str) -> GenerationControlPlan:
         project = self.projects.get(project_id)
@@ -920,6 +1072,10 @@ class GenerationPipeline:
         use_human_reference: bool = False,
         human_reference_markdown: str | None = None,
         project_type: str = "auto",
+        scope_node_id: str | None = None,
+        scope_mode: str = "subtree",
+        preserve_top_level: bool = True,
+        max_changes: int | None = None,
     ) -> dict:
         if self.workspace_store is None:
             raise ValueError("Workspace store is not configured.")
@@ -960,7 +1116,10 @@ class GenerationPipeline:
             "生成前目录精修建议：先按本地施组目录结构与煤火核心工艺规则扩细目录。"
             "应用后仅叶子节点进入来源映射和逐章生成；参考目录只作结构指导，不作项目事实来源。"
         )
-        proposal = self.workspace_store.propose_outline_change(project.id, suggestion, preview_nodes)
+        proposal = self.workspace_store.propose_outline_change(
+            project.id, suggestion, preview_nodes, scope_node_id=scope_node_id,
+            scope_mode=scope_mode, preserve_top_level=preserve_top_level, max_changes=max_changes,
+        )
         proposal["kind"] = "outline_proposal"
         proposal["refine_summary"] = refined["summary"]
         proposal["artifact_json_path"] = artifact_json_path
@@ -1452,6 +1611,7 @@ class GenerationPipeline:
         project_id: str,
         *,
         progress_callback: Callable[[str, int, int, str], None] | None = None,
+        only_pending: bool = False,
     ) -> GenerationRun:
         project = self.projects.get(project_id)
         run = project.runs[-1] if project.runs else self.prepare_run(project_id)
@@ -1467,8 +1627,15 @@ class GenerationPipeline:
         policy_by_node = {policy.node_id: policy for policy in control_plan.chapter_policies}
         run.status = RunStatus.running
         drafts: list[ChapterDraft] = []
-        total_tasks = len(run.chapter_tasks)
-        for task_index, task in enumerate(run.chapter_tasks, start=1):
+        tasks_to_process = []
+        for task in run.chapter_tasks:
+            if only_pending and _workspace_selected_version_id(self.workspace_store, project.id, task.node_id):
+                task.status = TaskStatus.passed
+                task.error_message = None
+                continue
+            tasks_to_process.append(task)
+        total_tasks = len(tasks_to_process)
+        for task_index, task in enumerate(tasks_to_process, start=1):
             if progress_callback:
                 progress_callback("writing", task_index - 1, total_tasks, f"正在生成章节：{task.title}")
             try:
@@ -1499,6 +1666,9 @@ class GenerationPipeline:
                     drafts.append(draft)
                     run.logs.append(f"{task.status.value}: {task.title}")
                     continue
+                writing_skill = self._ensure_chapter_writing_skill(
+                    project=project, node=node, selected_sections=selected_sections, policy=policy,
+                )
                 writing_unit_contexts = self._build_writing_unit_contexts(
                     project=project,
                     node=node,
@@ -1532,6 +1702,7 @@ class GenerationPipeline:
                     generation_policy=policy,
                     reference_atom_results=reference_atoms,
                     writing_unit_contexts=writing_unit_contexts,
+                    writing_skill=writing_skill,
                     global_context=render_generation_context_for_prompt(
                         project.generation_context,
                         current_node_id=node.id,
@@ -1556,6 +1727,44 @@ class GenerationPipeline:
         self._drafts[run.id] = drafts
         run.status = RunStatus.completed if all(task.status.value == "passed" for task in run.chapter_tasks) else RunStatus.partial_failed
         self._persist_validation(project.id, run, drafts=drafts, template_tree=project.template_tree, control_plan=control_plan)
+        self.projects.save(project)
+        return run
+
+    def merge_partial(self, project_id: str) -> GenerationRun:
+        """Persist a reviewable manuscript without pretending missing chapters are complete."""
+        project = self.projects.get(project_id)
+        if project.template_tree is None:
+            project.template_tree = self._effective_template_tree(project)
+        if project.template_tree is None:
+            raise ValueError("Project template tree is not loaded.")
+        run = project.runs[-1] if project.runs else self.prepare_run(project_id)
+        drafts = self._selected_version_drafts(project)
+        selected_ids = {draft.node_id for draft in drafts}
+        for node in iter_template_nodes(project.template_tree.nodes):
+            if node.children or node.id in selected_ids:
+                continue
+            drafts.append(
+                ChapterDraft(
+                    node_id=node.id,
+                    title=node.title,
+                    markdown=(
+                        "## 生成正文\n\n"
+                        "【待生成：本章节尚未完成，当前阶段性合稿不将其视为已完成内容。】\n"
+                    ),
+                    validation_status=TaskStatus.pending,
+                )
+            )
+        final_markdown = merge_template_tree_markdowns(
+            f"{project.name}施工组织设计（阶段性合稿）",
+            project.template_tree.nodes,
+            drafts,
+        )
+        run.final_artifact_path = self.artifacts.write_text(project_id, "artifacts/partial.md", final_markdown)
+        run.status = RunStatus.partial_failed
+        run.logs.append(
+            f"Saved partial manuscript with {len(selected_ids)} selected chapters; "
+            f"{len(drafts) - len(selected_ids)} chapters remain pending."
+        )
         self.projects.save(project)
         return run
 
@@ -1625,6 +1834,9 @@ class GenerationPipeline:
             self._persist_validation(project.id, run, drafts=self._drafts.get(run.id, []), template_tree=project.template_tree, control_plan=control_plan)
             self.projects.save(project)
             return draft
+        writing_skill = self._ensure_chapter_writing_skill(
+            project=project, node=node, selected_sections=selected_sections, policy=policy,
+        )
         if progress_callback:
             progress_callback("atom_retrieval", 0, 1, "已完成来源映射，正在匹配优质原子")
         writing_unit_contexts = self._build_writing_unit_contexts(
@@ -1665,6 +1877,7 @@ class GenerationPipeline:
             generation_policy=policy,
             reference_atom_results=reference_atoms,
             writing_unit_contexts=writing_unit_contexts,
+            writing_skill=writing_skill,
             global_context=render_generation_context_for_prompt(
                 project.generation_context,
                 current_node_id=node.id,
@@ -1728,6 +1941,7 @@ class GenerationPipeline:
             )
             atom_candidates = prefilter_reference_atoms(atoms, query, limit=5)
         guidance = guidance_for_node(node)
+        chapter_skill = self._load_chapter_writing_skill(project.id, node.id)
         return {
             "node_id": node.id,
             "title": node.title,
@@ -1764,6 +1978,7 @@ class GenerationPipeline:
                 "structure": guidance.structure,
                 "matched_skill_keys": node.matched_skill_keys,
             },
+            "chapter_writing_skill": dump_model(chapter_skill) if chapter_skill else None,
             "readiness": {
                 "can_generate": bool(source_candidates),
                 "message": (
@@ -1773,6 +1988,29 @@ class GenerationPipeline:
                 ),
             },
         }
+
+    def generate_chapter_writing_skill_for_node(self, project_id: str, node_id: str, *, force: bool = True) -> dict:
+        project = self._ensure_generation_context(self.projects.get(project_id))
+        project.template_tree = self._effective_template_tree(project)
+        if project.template_tree is None:
+            raise ValueError("Project template tree is not loaded.")
+        node = _find_node(project.template_tree.nodes, node_id)
+        if node is None:
+            raise KeyError(f"Unknown node_id: {node_id}")
+        control_plan = self._generation_control_plan(project)
+        policy = next((item for item in control_plan.chapter_policies if item.node_id == node_id), None)
+        section_by_id = {section.id: section for section in project.sections}
+        selected_sections = [section_by_id[section_id] for section_id in node.source_hints if section_id in section_by_id]
+        if not selected_sections:
+            selected_sections = [
+                section_by_id[match.section_id]
+                for match in self.retriever.retrieve(node, project.sections, limit=6)
+                if match.section_id in section_by_id
+            ]
+        skill = self._ensure_chapter_writing_skill(
+            project=project, node=node, selected_sections=selected_sections, policy=policy, force=force,
+        )
+        return dump_model(skill)
 
     def get_generation_context(self, project_id: str) -> dict:
         project = self.projects.get(project_id)
@@ -1792,8 +2030,18 @@ class GenerationPipeline:
         ]
         latest_run = project.runs[-1] if project.runs else None
         tasks = latest_run.chapter_tasks if latest_run else []
-        generated = [task for task in tasks if task.status in {TaskStatus.passed, TaskStatus.needs_repair}]
-        passed = [task for task in tasks if task.status == TaskStatus.passed]
+        selected_version_ids = {
+            task.node_id: _workspace_selected_version_id(self.workspace_store, project.id, task.node_id)
+            for task in tasks
+        }
+        generated = [
+            task for task in tasks
+            if task.status in {TaskStatus.passed, TaskStatus.needs_repair} or selected_version_ids.get(task.node_id)
+        ]
+        passed = [
+            task for task in tasks
+            if task.status == TaskStatus.passed or selected_version_ids.get(task.node_id)
+        ]
         needs_attention = [task for task in tasks if task.status in {TaskStatus.needs_repair, TaskStatus.failed}]
         published_atoms = 0
         total_atoms = 0
@@ -2703,6 +2951,41 @@ class GenerationPipeline:
             return {str(key): str(value) for key, value in payload.items()} if isinstance(payload, dict) else {}
         except (OSError, ValueError, TypeError):
             return {}
+
+    def _ensure_chapter_writing_skill(
+        self,
+        *,
+        project: Project,
+        node: TemplateNode,
+        selected_sections: list,
+        policy,
+        force: bool = False,
+    ) -> ChapterWritingSkill:
+        path = Path(self.artifacts.root) / project.id / "writing-skills" / f"{node.id}.json"
+        if not force:
+            cached = self._load_chapter_writing_skill(project.id, node.id)
+            if cached:
+                return cached
+        skill = generate_chapter_writing_skill(
+            node=node,
+            project_profile=project.project_profile,
+            global_context=render_generation_context_for_prompt(project.generation_context, current_node_id=node.id),
+            policy=policy,
+            selected_sections=selected_sections,
+            llm=self._structured_llm(),
+        )
+        self.artifacts.write_text(project.id, f"writing-skills/{node.id}.json", to_json_text(dump_model(skill)))
+        self.artifacts.write_text(project.id, f"writing-skills/{node.id}.md", render_chapter_writing_skill(skill))
+        return skill
+
+    def _load_chapter_writing_skill(self, project_id: str, node_id: str) -> ChapterWritingSkill | None:
+        path = Path(self.artifacts.root) / project_id / "writing-skills" / f"{node_id}.json"
+        try:
+            if path.exists():
+                return ChapterWritingSkill.model_validate(json.loads(path.read_text(encoding="utf-8-sig")))
+        except (OSError, ValueError, TypeError):
+            return None
+        return None
 
     def _build_writing_unit_contexts(
         self,

@@ -23,6 +23,7 @@ SUPPORTED_JOB_TYPES = {
     "outline_proposal",
     "outline_refine",
     "reference_import",
+    "reference_import_batch",
     "compliance_review",
 }
 
@@ -135,7 +136,11 @@ class GenerationJobManager:
             )
         if job_type == "project_generation":
             self.pipeline.prepare_run(project_id)
-            return _run_dict(self.pipeline.generate_all(project_id, progress_callback=progress))
+            return _run_dict(self.pipeline.generate_all(
+                project_id,
+                progress_callback=progress,
+                only_pending=bool(payload.get("only_pending", True)),
+            ))
         if job_type == "quality_audit":
             progress("validation", 0, 1, "正在审查结构、依据覆盖和质量问题")
             return self.pipeline.run_quality_audit(project_id, apply_feedback=bool(payload.get("apply_feedback", True)))
@@ -150,16 +155,40 @@ class GenerationJobManager:
             )
         if job_type == "outline_proposal":
             progress("outline", 0, 1, "正在分析目录调整范围并生成预览方案")
-            return self.pipeline.propose_ai_outline(project_id, str(payload.get("suggestion") or ""))
+            return self.pipeline.propose_ai_outline(
+                project_id, str(payload.get("suggestion") or ""),
+                scope_node_id=payload.get("scope_node_id"),
+                scope_mode=str(payload.get("scope_mode") or "subtree"),
+                preserve_top_level=bool(payload.get("preserve_top_level", True)),
+                max_changes=int(payload.get("max_changes") or 20),
+                mode=str(payload.get("mode") or "balanced"),
+            )
         if job_type == "outline_refine":
             progress("outline", 0, 1, "正在检查目录粒度、依据覆盖和闭环结构")
             return self.pipeline.propose_pre_generation_outline_refine(
                 project_id, mode=str(payload.get("mode") or "balanced"), use_local_corpus=True,
                 use_human_reference=False, human_reference_markdown=None, project_type=str(payload.get("project_type") or "auto"),
+                scope_node_id=payload.get("scope_node_id"), scope_mode=str(payload.get("scope_mode") or "subtree"),
+                preserve_top_level=bool(payload.get("preserve_top_level", True)), max_changes=int(payload.get("max_changes") or 20),
             )
         if job_type == "reference_import":
             progress("atomization", 0, int(payload.get("max_batches") or 3), "正在切分章节并提取候选原子")
             return process_reference_markdown(pipeline=self.pipeline, library=self.pipeline.reference_library, payload=payload)
+        if job_type == "reference_import_batch":
+            files = list(payload.get("files") or [])
+            if not files:
+                raise ValueError("批量导入至少需要一份 Markdown 文档")
+            results = []
+            failures = []
+            for index, item in enumerate(files, start=1):
+                progress("atomization", index - 1, len(files), f"正在切分第 {index}/{len(files)} 份：{item.get('file_name', '未命名')}")
+                try:
+                    result = process_reference_markdown(pipeline=self.pipeline, library=self.pipeline.reference_library, payload=item)
+                    results.append(result)
+                except Exception as exc:
+                    failures.append({"file_name": item.get("file_name", "未命名"), "error": str(exc)})
+            progress("saving", len(files), len(files), "已保存已完成文档，可立即审核候选原子")
+            return {"status": "partial" if failures else "success", "results": results, "failed": failures, "document_count": len(results), "atom_count": sum(item.get("atom_count", 0) for item in results)}
         raise ValueError(f"Unsupported job_type: {job_type}")
 
     def _get_by_id(self, job_id: str) -> dict:

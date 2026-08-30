@@ -47,9 +47,50 @@ class AtomStatusRequest(BaseModel):
     status: ReferenceReviewStatus
 
 
+class ReferenceDocumentUpdateRequest(BaseModel):
+    project_name: str | None = None
+    project_type: str | None = None
+    document_kind: ReferenceDocumentKind | None = None
+
+
+class ReferenceAtomUpdateRequest(BaseModel):
+    content: str | None = None
+    title_path: list[str] | None = None
+    engineering_object: str | None = None
+    specialty: str | None = None
+    work_item: str | None = None
+    process: str | None = None
+    process_stage: str | None = None
+    chapter_type: str | None = None
+    applicability: list[str] | None = None
+    prohibited_scenarios: list[str] | None = None
+    quality_score: float | None = Field(default=None, ge=0, le=1)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
 @router.get("/documents")
 def list_reference_documents(request: Request):
     return [dump_model(item) for item in request.app.state.reference_library.list_documents()]
+
+
+@router.patch("/documents/{document_id}")
+def update_reference_document(document_id: str, payload: ReferenceDocumentUpdateRequest, request: Request):
+    try:
+        document = request.app.state.reference_library.get_document(document_id)
+        for key, value in payload.model_dump(exclude_unset=True).items():
+            setattr(document, key, value)
+        return dump_model(request.app.state.reference_library.update_document(document))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.delete("/documents/{document_id}")
+def delete_reference_document(document_id: str, request: Request):
+    try:
+        request.app.state.reference_library.delete_document(document_id)
+        return {"deleted": True, "document_id": document_id}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/summary")
@@ -88,6 +129,35 @@ def reference_library_summary(request: Request):
             if atoms
             else "参考库为空时不影响投标证据生成，可稍后逐步补充。"
         ),
+    }
+
+
+@router.get("/management")
+def reference_library_management(request: Request):
+    """Return reference documents and atoms for the management console."""
+    library = request.app.state.reference_library
+    documents = library.list_documents()
+    atoms = library.list_atoms()
+    counts: dict[str, dict[str, int]] = {}
+    for atom in atoms:
+        item = counts.setdefault(atom.document_id, {"total": 0, "published": 0, "candidate": 0, "rejected": 0})
+        item["total"] += 1
+        status = atom.status.value if hasattr(atom.status, "value") else str(atom.status)
+        if status == "published":
+            item["published"] += 1
+        elif status == "rejected":
+            item["rejected"] += 1
+        else:
+            item["candidate"] += 1
+    return {
+        "documents": [
+            {
+                **dump_model(document),
+                "atom_counts": counts.get(document.id, {"total": 0, "published": 0, "candidate": 0, "rejected": 0}),
+            }
+            for document in documents
+        ],
+        "atoms": [dump_model(atom) for atom in atoms],
     }
 
 
@@ -165,6 +235,17 @@ def set_reference_atom_status(atom_id: str, payload: AtomStatusRequest, request:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return dump_model(atom)
+
+
+@router.patch("/atoms/{atom_id}")
+def update_reference_atom(atom_id: str, payload: ReferenceAtomUpdateRequest, request: Request):
+    try:
+        atom = request.app.state.reference_library.get_atom(atom_id)
+        for key, value in payload.model_dump(exclude_unset=True).items():
+            setattr(atom, key, value)
+        return dump_model(request.app.state.reference_library.update_atom(atom))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/retrieve")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from sqlalchemy import text
 
 from coalplan.application.serialization import dump_model
 from coalplan.domain.reference_library import (
@@ -35,6 +36,7 @@ class ReferenceLibraryRepository:
                 for key, value in values.items():
                     setattr(record, key, value)
             session.commit()
+        self._refresh_search_indexes()
         return document
 
     def get_document(self, document_id: str) -> ReferenceDocument:
@@ -48,6 +50,19 @@ class ReferenceLibraryRepository:
         with self.session_factory() as session:
             records = session.query(ReferenceDocumentRecord).order_by(ReferenceDocumentRecord.file_name).all()
             return [_document(record) for record in records]
+
+    def update_document(self, document: ReferenceDocument) -> ReferenceDocument:
+        document.version += 1
+        return self.save_document(document)
+
+    def delete_document(self, document_id: str) -> None:
+        with self.session_factory() as session:
+            record = session.get(ReferenceDocumentRecord, document_id)
+            if record is None:
+                raise KeyError(f"Unknown reference document: {document_id}")
+            session.delete(record)
+            session.commit()
+        self._refresh_search_indexes()
 
     def replace_document_content(
         self,
@@ -74,6 +89,7 @@ class ReferenceLibraryRepository:
             for atom in unique_atoms.values():
                 session.add(_atom_record(atom))
             session.commit()
+        self._refresh_search_indexes()
 
     def list_atoms(
         self,
@@ -97,6 +113,38 @@ class ReferenceLibraryRepository:
             record.status = status.value
             session.commit()
             return _atom(record)
+
+    def get_atom(self, atom_id: str) -> ReferenceAtom:
+        with self.session_factory() as session:
+            record = session.get(ReferenceAtomRecord, atom_id)
+            if record is None:
+                raise KeyError(f"Unknown reference atom: {atom_id}")
+            return _atom(record)
+
+    def update_atom(self, atom: ReferenceAtom) -> ReferenceAtom:
+        with self.session_factory() as session:
+            record = session.get(ReferenceAtomRecord, atom.id)
+            if record is None:
+                raise KeyError(f"Unknown reference atom: {atom.id}")
+            atom.version = record.version + 1
+            values = _atom_record(atom)
+            for key in ("content", "title_path_json", "tags_json", "applicability_json", "prohibited_scenarios_json", "fact_variables_json", "quality_score", "confidence", "status", "version"):
+                setattr(record, key, getattr(values, key))
+            session.commit()
+        self._refresh_search_indexes()
+        return atom
+
+    def _refresh_search_indexes(self) -> None:
+        """Refresh small local FTS mirrors after incremental writes."""
+        with self.session_factory() as session:
+            try:
+                session.execute(text("DELETE FROM reference_document_search"))
+                session.execute(text("INSERT INTO reference_document_search(document_id, search_text) SELECT id, file_name || ' ' || project_name || ' ' || project_type FROM reference_documents"))
+                session.execute(text("DELETE FROM reference_atom_search"))
+                session.execute(text("INSERT INTO reference_atom_search(atom_id, document_id, search_text) SELECT id, document_id, content || ' ' || project_name || ' ' || project_type || ' ' || tags_json FROM reference_atoms"))
+                session.commit()
+            except Exception:
+                session.rollback()
 
     def save_usage(self, usage: ChapterAtomUsage, *, prompt_snapshot_path: str | None = None) -> None:
         with self.session_factory() as session:
@@ -150,6 +198,11 @@ def _atom_record(atom: ReferenceAtom) -> ReferenceAtomRecord:
         "process_stage": atom.process_stage,
         "chapter_type": atom.chapter_type,
         "content_functions": atom.content_functions,
+        "reference_value": atom.reference_value,
+        "value_reason": atom.value_reason,
+        "reuse_scope": atom.reuse_scope,
+        "migration_warning": atom.migration_warning,
+        "dedup_group": atom.dedup_group,
     }
     return ReferenceAtomRecord(
         id=atom.id,
@@ -191,6 +244,11 @@ def _atom(record: ReferenceAtomRecord) -> ReferenceAtom:
         process_stage=tags.get("process_stage", ""),
         chapter_type=tags.get("chapter_type", ""),
         content_functions=tags.get("content_functions", []),
+        reference_value=tags.get("reference_value", "high"),
+        value_reason=tags.get("value_reason", ""),
+        reuse_scope=tags.get("reuse_scope", []),
+        migration_warning=tags.get("migration_warning", []),
+        dedup_group=tags.get("dedup_group", ""),
         applicability=json.loads(record.applicability_json),
         prohibited_scenarios=json.loads(record.prohibited_scenarios_json),
         fact_variables=[ReferenceFactVariable(**item) for item in json.loads(record.fact_variables_json)],

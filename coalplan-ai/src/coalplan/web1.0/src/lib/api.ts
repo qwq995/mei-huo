@@ -16,9 +16,14 @@ export type TemplateNode = {
   children: TemplateNode[];
 };
 
-export type OutlineNode = Omit<TemplateNode, "children"> & { node_id: string; children?: TemplateNode[] };
+export type OutlineReadiness = "ready" | "needs_confirmation" | "container" | "disabled";
+export type OutlineNode = Omit<TemplateNode, "children"> & { node_id: string; children?: TemplateNode[]; readiness?: OutlineReadiness; readiness_reasons?: string[] };
 export type ChapterSummary = {
   overview?: string;
+  scope?: string[];
+  key_points?: string[];
+  source_basis?: string[];
+  missing_information?: string[];
   generation_role?: string;
   coverage_status?: string;
   writing_unit_hints?: string[];
@@ -44,7 +49,13 @@ export type ProjectResponse = {
   source_document_count: number;
   section_count: number;
   run_count: number;
+  project_tags?: string[];
+  selected_outline_template_id?: string | null;
 };
+
+export type OutlineTemplateSummary = { template_id: string; file_name: string; project_name: string; project_type: string; tags: string[]; key_topics: string[]; title_count: number; leaf_count: number; adjustment_count: number; top_headings: string[] };
+export type OutlineTemplateRecommendation = { template_id: string; rank: number; score: number; match_reason: string; recommended_use?: string; risks?: string[] };
+export type OutlineTemplateRecommendationResponse = { query: { project_name: string; tags: string[]; project_type: string; limit: number }; candidates: OutlineTemplateSummary[]; recommendations: OutlineTemplateRecommendation[]; generated_by: string };
 
 export type ProjectExperienceSummary = {
   project_id: string;
@@ -54,6 +65,18 @@ export type ProjectExperienceSummary = {
   reference_library: { published_atoms: number; total_atoms: number; message: string };
   actions: Array<{ id: string; label: string; target_step?: string; node_id?: string | null }>;
   principles: string[];
+};
+
+export type ProjectSourceDocument = {
+  id: string;
+  file_name: string;
+  role: string;
+  status: string;
+  raw_artifact_path?: string | null;
+  normalized_artifact_path?: string | null;
+  section_count: number;
+  character_count: number;
+  notes: string[];
 };
 
 export type WritingUnitPreview = {
@@ -77,6 +100,7 @@ export type ChapterGenerationPreflight = {
   source_candidates: Array<{ section_id: string; title_path: string[]; snippet: string }>;
   reference_atom_candidates: Array<{ atom_id: string; project_name: string; title_path: string[]; process: string; quality_score: number; status: string }>;
   writing_skill: { pattern_key: string; structure: string[]; matched_skill_keys: string[] };
+  chapter_writing_skill?: Record<string, unknown> | null;
   readiness: { can_generate: boolean; message: string };
 };
 
@@ -98,6 +122,23 @@ export type ReferenceLibrarySummary = {
     status: string;
     excerpt: string;
   }>;
+};
+
+export type ReferenceManagementDocument = {
+  id: string;
+  file_name: string;
+  project_name: string;
+  project_type: string;
+  document_kind: string;
+  status: string;
+  version: number;
+  source_path: string;
+  atom_counts: { total: number; published: number; candidate: number; rejected: number };
+};
+
+export type ReferenceManagementResponse = {
+  documents: ReferenceManagementDocument[];
+  atoms: ReferenceAtomDetail[];
 };
 
 export type ReferenceImportResult = {
@@ -132,6 +173,7 @@ export type ReferenceAtomDetail = {
   fact_variables: Array<{ name: string; value: string; variable_type: string; migration_policy: string }>;
   quality_score: number;
   confidence: number;
+  version?: number;
   status: string;
 };
 
@@ -822,7 +864,7 @@ export type ChapterTaskSummary = {
 };
 
 export type GenerationJobStatus = "queued" | "running" | "completed" | "partial" | "failed" | "interrupted";
-export type GenerationJobType = "directory_generation" | "chapter_generation" | "child_chapter_generation" | "project_generation" | "quality_audit" | "outline_proposal" | "outline_refine" | "reference_import";
+export type GenerationJobType = "directory_generation" | "chapter_generation" | "child_chapter_generation" | "project_generation" | "quality_audit" | "outline_proposal" | "outline_refine" | "reference_import" | "reference_import_batch" | "compliance_review";
 export type GenerationJob = {
   job_id: string;
   project_id: string;
@@ -841,6 +883,36 @@ export type GenerationJob = {
   completed_at?: string | null;
 };
 
+export type ComplianceFinding = {
+  id?: string;
+  atom_id: string;
+  node_id: string;
+  chapter_title: string;
+  standard_code: string;
+  standard_name: string;
+  clause_no?: string | null;
+  status: string;
+  severity?: string;
+  explanation: string;
+  evidence_quote?: string;
+  suggested_fix?: string;
+  ai_fixable?: boolean;
+};
+
+export type ComplianceReviewResponse = {
+  run?: Record<string, unknown>;
+  standard_matches: Array<{ document_id: string; score: number; decision: string; match_reason: string }>;
+  matched_document_count: number;
+  published_constraint_count: number;
+  candidate_constraint_count: number;
+  finding_count: number;
+  open_count: number;
+  ai_fixable_count: number;
+  warnings: string[];
+  findings: ComplianceFinding[];
+  message: string;
+};
+
 export const API_BASE = import.meta.env.VITE_COALPLAN_API_BASE ?? "http://127.0.0.1:8010";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -857,14 +929,20 @@ export const getTemplateTree = async (templateId: string) => (await request<{ no
 export const listProjects = () => request<ProjectResponse[]>("/projects");
 export const getProject = (projectId: string) => request<ProjectResponse>(`/projects/${projectId}`);
 export const getProjectExperienceSummary = (projectId: string) => request<ProjectExperienceSummary>(`/projects/${projectId}/experience-summary`);
+export const listProjectSourceDocuments = (projectId: string) => request<ProjectSourceDocument[]>(`/projects/${projectId}/source-documents`);
 export const getReferenceLibrarySummary = () => request<ReferenceLibrarySummary>("/reference-library/summary");
 export const listReferenceAtoms = (status?: string) => request<ReferenceAtomDetail[]>(`/reference-library/atoms${status ? `?status=${encodeURIComponent(status)}` : ""}`);
+export const getReferenceManagement = () => request<ReferenceManagementResponse>("/reference-library/management");
 export const uploadReferenceMarkdown = (
   payload: { file_name: string; content: string; project_name: string; project_type: string; focus_terms?: string[]; max_batches?: number }
 ) => request<ReferenceImportResult>("/reference-library/upload-markdown", { method: "POST", body: JSON.stringify(payload) });
 export const updateReferenceAtomStatus = (atomId: string, status: "published" | "rejected" | "reviewed" | "ai_candidate") =>
   request<Record<string, unknown>>(`/reference-library/atoms/${atomId}/status`, { method: "PATCH", body: JSON.stringify({ status }) });
-export const createProject = (name: string, templateId: string) => request<ProjectResponse>("/projects", { method: "POST", body: JSON.stringify({ name, template_id: templateId }) });
+export const updateReferenceAtom = (atomId: string, payload: Partial<ReferenceAtomDetail>) => request<ReferenceAtomDetail>(`/reference-library/atoms/${atomId}`, { method: "PATCH", body: JSON.stringify(payload) });
+export const deleteReferenceDocument = (documentId: string) => request<{ deleted: boolean }>(`/reference-library/documents/${documentId}`, { method: "DELETE" });
+export const updateReferenceDocument = (documentId: string, payload: { project_name?: string; project_type?: string }) => request<Record<string, unknown>>(`/reference-library/documents/${documentId}`, { method: "PATCH", body: JSON.stringify(payload) });
+export const createProject = (name: string, templateId: string, projectTags: string[] = [], outlineTemplateId?: string | null) => request<ProjectResponse>("/projects", { method: "POST", body: JSON.stringify({ name, template_id: templateId, project_tags: projectTags, outline_template_id: outlineTemplateId ?? null }) });
+export const recommendOutlineTemplates = (projectName: string, tags: string[], limit = 5) => request<OutlineTemplateRecommendationResponse>("/outline-template-library/recommend", { method: "POST", body: JSON.stringify({ project_name: projectName, tags, limit, project_type: "auto" }) });
 export const deleteProject = (projectId: string) => request<{ deleted: boolean }>(`/projects/${projectId}`, { method: "DELETE" });
 export const uploadBidMarkdown = (projectId: string, fileName: string, content: string) => request<ProjectResponse>(`/projects/${projectId}/bid-markdown`, { method: "POST", body: JSON.stringify({ file_name: fileName, content }) });
 export const getSourceSection = (projectId: string, sectionId: string) => request<SourceSection>(`/projects/${projectId}/sections/${encodeURIComponent(sectionId)}`);
@@ -903,11 +981,13 @@ export const applyGeneratedPatternLibrary = (generatedPath?: string | null) =>
 export const exportPatternLibrarySkill = (generatedPath?: string | null, outputPath?: string | null, outputDir?: string | null) =>
   request<PatternLibrarySkillResponse>("/pattern-library/skill/export", { method: "POST", body: JSON.stringify({ generated_path: generatedPath, output_path: outputPath, output_dir: outputDir }) });
 export const listOutlineNodes = (projectId: string) => request<OutlineNode[]>(`/projects/${projectId}/outline-nodes`);
+export const getOutlineOverview = (projectId: string) => request<{ project_id: string; node_count: number; summary_count: number; missing_information_count: number; nodes: Array<Record<string, unknown>> }>(`/projects/${projectId}/outline/overview`);
 export const createOutlineNode = (projectId: string, payload: Partial<OutlineNode> & { title: string }) => request<OutlineNode>(`/projects/${projectId}/outline-nodes`, { method: "POST", body: JSON.stringify(payload) });
 export const updateOutlineNode = (projectId: string, nodeId: string, payload: Partial<OutlineNode>) => request<OutlineNode>(`/projects/${projectId}/outline-nodes/${nodeId}`, { method: "PATCH", body: JSON.stringify(payload) });
 export const deleteOutlineNode = (projectId: string, nodeId: string) => request<{ deleted: boolean }>(`/projects/${projectId}/outline-nodes/${nodeId}`, { method: "DELETE" });
-export const proposeOutlineChange = (projectId: string, suggestion: string, preview?: Record<string, unknown>) => request<AIProposal>(`/projects/${projectId}/outline/propose-ai-change`, { method: "POST", body: JSON.stringify({ suggestion, preview }) });
-export const proposeOutlineAIPlan = (projectId: string, suggestion: string) => request<AIProposal>(`/projects/${projectId}/outline/ai-plan`, { method: "POST", body: JSON.stringify({ suggestion }) });
+export const moveOutlineNode = (projectId: string, nodeId: string, direction: "up" | "down" | "indent" | "outdent") => request<OutlineNode>(`/projects/${projectId}/outline-nodes/${nodeId}/move`, { method: "POST", body: JSON.stringify({ direction }) });
+export const proposeOutlineChange = (projectId: string, suggestion: string, preview?: Record<string, unknown>, options: { scope_node_id?: string | null; scope_mode?: string; preserve_top_level?: boolean; max_changes?: number; mode?: string } = {}) => request<AIProposal>(`/projects/${projectId}/outline/propose-ai-change`, { method: "POST", body: JSON.stringify({ suggestion, preview, ...options }) });
+export const proposeOutlineAIPlan = (projectId: string, suggestion: string, options: { scope_node_id?: string | null; scope_mode?: string; preserve_top_level?: boolean; max_changes?: number; mode?: string } = {}) => request<AIProposal>(`/projects/${projectId}/outline/ai-plan`, { method: "POST", body: JSON.stringify({ suggestion, ...options }) });
 export const proposeControlPlanOutlineRepair = (projectId: string) => request<AIProposal>(`/projects/${projectId}/outline/control-plan-proposal`, { method: "POST" });
 export const proposePreGenerationOutlineRefine = (
   projectId: string,
@@ -915,14 +995,17 @@ export const proposePreGenerationOutlineRefine = (
 ) => request<AIProposal & { refine_summary?: Record<string, unknown>; artifact_json_path?: string | null; artifact_markdown_path?: string | null }>(`/projects/${projectId}/outline/pre-generation-refine`, { method: "POST", body: JSON.stringify(payload) });
 export const estimateOutlineWordCounts = (projectId: string, referenceMarkdown?: string | null) => request<{ estimates: Array<Record<string, unknown>>; nodes: OutlineNode[] }>(`/projects/${projectId}/outline/word-counts/estimate`, { method: "POST", body: JSON.stringify({ reference_markdown: referenceMarkdown }) });
 export const proposeProjectSubsections = (projectId: string) => request<AIProposal>(`/projects/${projectId}/outline/subsection-proposals`, { method: "POST" });
-export const applyOutlineProposal = (projectId: string, proposalId: string) => request<AIProposal>(`/projects/${projectId}/outline/proposals/${proposalId}/apply`, { method: "POST" });
+export const listOutlineProposals = (projectId: string, status = "pending") => request<AIProposal[]>(`/projects/${projectId}/outline/proposals?status=${encodeURIComponent(status)}`);
+export const applyOutlineProposal = (projectId: string, proposalId: string, payload: { include_node_ids?: string[] | null; exclude_node_ids?: string[] } = {}) => request<AIProposal & { snapshot_id?: string | null }>(`/projects/${projectId}/outline/proposals/${proposalId}/apply`, { method: "POST", body: JSON.stringify(payload) });
 export const rejectOutlineProposal = (projectId: string, proposalId: string) => request<AIProposal>(`/projects/${projectId}/outline/proposals/${proposalId}/reject`, { method: "POST" });
+export const restoreOutlineSnapshot = (projectId: string, snapshotId: string) => request<{ restored: boolean; snapshot_id: string; node_count: number }>(`/projects/${projectId}/outline/snapshots/${snapshotId}/restore`, { method: "POST" });
 export const getWorkspace = (projectId: string, nodeId: string) => request<ChapterWorkspace>(`/projects/${projectId}/chapters/${nodeId}/workspace`);
 export const addSupplement = (projectId: string, nodeId: string, payload: Partial<ChapterSupplement>) => request<ChapterSupplement>(`/projects/${projectId}/chapters/${nodeId}/supplements`, { method: "POST", body: JSON.stringify(payload) });
 export const updateSupplement = (projectId: string, nodeId: string, supplementId: string, payload: Partial<ChapterSupplement>) => request<ChapterSupplement>(`/projects/${projectId}/chapters/${nodeId}/supplements/${supplementId}`, { method: "PATCH", body: JSON.stringify(payload) });
 export const deleteSupplement = (projectId: string, nodeId: string, supplementId: string) => request<{ deleted: boolean }>(`/projects/${projectId}/chapters/${nodeId}/supplements/${supplementId}`, { method: "DELETE" });
 export const generateChapter = (projectId: string, nodeId: string) => request<ChapterResponse>(`/projects/${projectId}/chapters/${nodeId}/generate`, { method: "POST" });
 export const getChapterGenerationPreflight = (projectId: string, nodeId: string) => request<ChapterGenerationPreflight>(`/projects/${projectId}/chapters/${nodeId}/writing-units`);
+export const generateChapterWritingSkill = (projectId: string, nodeId: string) => request<Record<string, unknown>>(`/projects/${projectId}/chapters/${nodeId}/writing-skill`, { method: "POST" });
 export const generateChildChapters = (projectId: string, parentNodeId: string, recursive = false, onlyPending = false, limit?: number | null) =>
   request<ChildChapterGenerationRun>(`/projects/${projectId}/chapters/${parentNodeId}/children/generate`, {
     method: "POST",

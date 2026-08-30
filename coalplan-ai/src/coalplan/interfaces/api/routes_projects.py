@@ -48,7 +48,12 @@ def get_pipeline_blueprint():
 def create_project(payload: ProjectCreateRequest, request: Request):
     pipeline = request.app.state.pipeline
     try:
-        project = pipeline.create_project(payload.name, payload.template_id)
+        project = pipeline.create_project(
+            payload.name,
+            payload.template_id,
+            project_tags=payload.project_tags,
+            outline_template_id=payload.outline_template_id,
+        )
         return project_summary(project)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -148,6 +153,34 @@ def get_source_toc(project_id: str, request: Request):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/source-documents")
+def list_source_documents(project_id: str, request: Request):
+    """Return persisted upload records with the number of parsed sections."""
+    try:
+        project = request.app.state.pipeline.projects.get(project_id)
+        section_counts: dict[str, int] = {}
+        section_chars: dict[str, int] = {}
+        for section in project.sections:
+            section_counts[section.source_file] = section_counts.get(section.source_file, 0) + 1
+            section_chars[section.source_file] = section_chars.get(section.source_file, 0) + len(section.content)
+        return [
+            {
+                "id": document.id,
+                "file_name": document.file_name,
+                "role": document.role.value,
+                "status": document.status.value,
+                "raw_artifact_path": document.raw_artifact_path,
+                "normalized_artifact_path": document.normalized_artifact_path,
+                "section_count": section_counts.get(document.file_name, 0),
+                "character_count": section_chars.get(document.file_name, 0),
+                "notes": document.notes,
+            }
+            for document in project.source_documents
+        ]
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/projects/{project_id}/sections/{section_id}", response_model=SectionResponse)

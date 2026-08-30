@@ -23,6 +23,7 @@ from coalplan.domain.templates import TemplateNode, TemplateTree, iter_template_
 from coalplan.infrastructure.validation.json_contract import TemplateOutlinePlanValidator
 from coalplan.ports.llm import StructuredLLMClient
 from coalplan.ports.repository import ArtifactRepository
+from coalplan.application.outline_template_library import OutlineTemplateDocument
 
 
 def plan_template_outline(
@@ -33,10 +34,20 @@ def plan_template_outline(
     template_tree: TemplateTree,
     llm: StructuredLLMClient,
     artifacts: ArtifactRepository,
+    user_instruction: str = "",
+    scope_node_id: str | None = None,
+    scope_mode: str = "subtree",
+    preserve_top_level: bool = True,
+    reference_outline: OutlineTemplateDocument | None = None,
 ) -> TemplateOutlinePlan:
     try:
         data = llm.complete_json(
-            build_template_outline_prompt(profile=profile, toc_items=toc_items, template_tree=template_tree),
+            build_template_outline_prompt(
+                profile=profile, toc_items=toc_items, template_tree=template_tree,
+                user_instruction=user_instruction, scope_node_id=scope_node_id,
+                scope_mode=scope_mode, preserve_top_level=preserve_top_level,
+                reference_outline=reference_outline,
+            ),
             schema_name="TemplateOutlinePlan",
         )
         outline = TemplateOutlinePlan(**data)
@@ -77,7 +88,12 @@ def build_template_outline_plan(
     return outline
 
 
-def build_template_outline_prompt(*, profile: ProjectProfile, toc_items: list[SourceTocItem], template_tree: TemplateTree) -> str:
+def build_template_outline_prompt(
+    *, profile: ProjectProfile, toc_items: list[SourceTocItem], template_tree: TemplateTree,
+    user_instruction: str = "", scope_node_id: str | None = None,
+    scope_mode: str = "subtree", preserve_top_level: bool = True,
+    reference_outline: OutlineTemplateDocument | None = None,
+) -> str:
     return "\n".join(
         [
             "你是施工组织设计目录规划 agent。你需要依据项目概况、投标文档目录和目标模板，生成适合本项目的完整施组目录规划。",
@@ -91,11 +107,19 @@ def build_template_outline_prompt(*, profile: ProjectProfile, toc_items: list[So
             "目标模板树：",
             to_json_text(_flat_template_nodes(template_tree)),
             "",
+            "用户选择的本地优秀施组目录参考（只借鉴结构，不得迁移项目事实）：",
+            to_json_text(_reference_outline_payload(reference_outline)),
+            "",
             "已匹配的特化 skill（只用于子章节结构扩充，不是项目事实）：",
             render_outline_skill_context(template_tree, toc_items),
             "",
             "任务：",
             "同时受目标模板和投标文档目录约束生成本项目目录规划，并为每个可生成小章节填写四个模块。",
+            "",
+            "用户本次调整意图：",
+            user_instruction or "未提供额外调整意图，请按项目资料和模板规划。",
+            f"调整范围：{scope_mode}，目标节点：{scope_node_id or '整个目录'}，保留一级目录：{'是' if preserve_top_level else '否'}。",
+            "优先按用户意图调整目录结构、节点标题及四个结构化模块；范围之外的现有节点保持不变。",
             "",
             "输出要求：",
             "只输出 JSON，不要 Markdown，不要解释。",
@@ -117,6 +141,18 @@ def build_template_outline_prompt(*, profile: ProjectProfile, toc_items: list[So
             "- target_word_count 为本节建议目标字数，可为 null；不得为了凑字数编造来源不支持的参数。",
         ]
     )
+
+
+def _reference_outline_payload(reference: OutlineTemplateDocument | None) -> dict:
+    if reference is None:
+        return {"selected": False, "nodes": []}
+    return {
+        "selected": True,
+        "template_id": reference.template_id,
+        "project_type": reference.project_type,
+        "key_topics": reference.key_topics,
+        "nodes": [{"title": node.title, "level": node.level, "parent_id": node.parent_id, "topic_keys": node.topic_keys} for node in reference.nodes[:240]],
+    }
 
 
 def summarize_outline_context(

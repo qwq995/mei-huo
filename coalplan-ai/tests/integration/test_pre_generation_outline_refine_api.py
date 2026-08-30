@@ -36,6 +36,12 @@ class PreGenerationOutlineRefineApiTest(unittest.TestCase):
                 directory = await client.post(f"/projects/{project_id}/directory")
                 self.assertEqual(200, directory.status_code)
                 before_nodes = (await client.get(f"/projects/{project_id}/outline-nodes")).json()
+                overview = await client.get(f"/projects/{project_id}/outline/overview")
+                self.assertEqual(200, overview.status_code)
+                overview_payload = overview.json()
+                self.assertEqual(project_id, overview_payload["project_id"])
+                self.assertEqual(len(before_nodes), overview_payload["node_count"])
+                self.assertTrue(all("overview" in node and "path" in node for node in overview_payload["nodes"]))
 
                 proposal = await client.post(
                     f"/projects/{project_id}/outline/pre-generation-refine",

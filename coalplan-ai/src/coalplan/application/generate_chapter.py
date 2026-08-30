@@ -17,6 +17,7 @@ from coalplan.ports.llm import LLMClient
 from coalplan.ports.repository import ArtifactRepository
 
 from .chapter_writing_guidance import guidance_for_node, render_writing_guidance
+from .chapter_writing_skill import ChapterWritingSkill, render_chapter_writing_skill
 from .chapter_skill_library import render_chapter_skills_for_prompt
 from .chapter_writing_units import ChapterWritingUnitContext, compact_completed_unit
 from .evidence_utilization import audit_evidence_utilization, extract_required_source_facts
@@ -55,6 +56,7 @@ def generate_chapter(
     generation_policy: ChapterGenerationPolicy | None = None,
     reference_atom_results: list[AtomRetrievalResult] | None = None,
     writing_unit_contexts: list[ChapterWritingUnitContext] | None = None,
+    writing_skill: ChapterWritingSkill | None = None,
     global_context: str = "",
     progress_callback: Callable[[str, int, int, str], None] | None = None,
     completed_writing_units: dict[str, str] | None = None,
@@ -74,6 +76,7 @@ def generate_chapter(
             required_fact_hints=required_fact_hints or [],
             generation_policy=generation_policy,
             writing_unit_contexts=writing_unit_contexts,
+            writing_skill=writing_skill,
             progress_callback=progress_callback,
             completed_writing_units=completed_writing_units or {},
             unit_checkpoint_callback=unit_checkpoint_callback,
@@ -87,6 +90,7 @@ def generate_chapter(
             user_context=user_context,
             required_fact_hints=required_fact_hints or [],
             generation_policy=generation_policy,
+            writing_skill=writing_skill,
             reference_atom_results=reference_atom_results or [],
             global_context=global_context,
         )
@@ -113,6 +117,7 @@ def generate_chapter(
             generation_policy=generation_policy,
             reference_atom_results=reference_atom_results or [],
             writing_unit_traces=unit_traces,
+            writing_skill=writing_skill,
         ),
     )
     draft = validate_chapter(draft, expected_title=node.title, source_count=len(task.source_matches))
@@ -289,6 +294,7 @@ def _generate_chapter_by_writing_units(
     required_fact_hints: list[str],
     generation_policy: ChapterGenerationPolicy | None,
     writing_unit_contexts: list[ChapterWritingUnitContext],
+    writing_skill: ChapterWritingSkill | None = None,
     progress_callback: Callable[[str, int, int, str], None] | None = None,
     completed_writing_units: dict[str, str] | None = None,
     unit_checkpoint_callback: Callable[[str, str], None] | None = None,
@@ -316,6 +322,7 @@ def _generate_chapter_by_writing_units(
                 completed_unit_context=completed_context,
                 required_fact_hints=required_fact_hints,
                 generation_policy=generation_policy,
+                writing_skill=writing_skill,
             )
             unit_markdown = _normalize_writing_unit_markdown(llm.complete(prompt), context.spec.title)
             if unit_checkpoint_callback:
@@ -357,6 +364,7 @@ def build_writing_unit_prompt(
     completed_unit_context: list[str],
     required_fact_hints: list[str],
     generation_policy: ChapterGenerationPolicy | None,
+    writing_skill: ChapterWritingSkill | None = None,
 ) -> str:
     guidance = guidance_for_node(node)
     scoped_facts = extract_required_source_facts(context.evidence_spans, max_facts=12, max_per_evidence=3)
@@ -408,6 +416,9 @@ def build_writing_unit_prompt(
             "",
             "## 三源输入三：写作组织技巧（仅控制结构与表达）",
             render_writing_guidance(guidance),
+            "",
+            "## 当前章节 AI Writing Skill（优先执行）",
+            render_chapter_writing_skill(writing_skill) if writing_skill else "未生成 AI Skill，使用基础章节写作规则。",
             "",
             render_pattern_matches_for_prompt(_node_pattern_text(node), primary_key=guidance.pattern_key) or "无本地模式规则。",
             "",
@@ -617,6 +628,7 @@ def build_chapter_prompt(
     user_context: str = "",
     required_fact_hints: list[str] | None = None,
     generation_policy: ChapterGenerationPolicy | None = None,
+    writing_skill: ChapterWritingSkill | None = None,
     reference_atom_results: list[AtomRetrievalResult] | None = None,
     global_context: str = "",
 ) -> str:
@@ -628,6 +640,7 @@ def build_chapter_prompt(
     evidence_map = _render_source_evidence(task)
     required_source_facts = _render_required_source_facts(task)
     feedback_required_facts = _render_feedback_required_facts(required_fact_hints or [])
+    outline_summary = to_json_text(dump_model(node.chapter_summary))
     policy_context = _render_generation_policy(generation_policy)
     guidance = guidance_for_node(node)
     writing_guidance = render_writing_guidance(guidance)
@@ -649,6 +662,10 @@ def build_chapter_prompt(
             "",
             f"当前小章节标题：{node.title}",
             "",
+            "## 当前节点纲要与待补信息",
+            outline_summary,
+            "以上纲要用于组织正文结构；其中 missing_information、unresolved_items 和 manual_fill 是待人工核验事项，不是项目事实，不得直接写成已完成或已确认。",
+            "",
             "## 本章目标字数",
             word_count_instruction,
             "",
@@ -657,6 +674,9 @@ def build_chapter_prompt(
             "",
             "## 施组写作模式参考",
             writing_guidance,
+            "",
+            "## 当前章节 AI Writing Skill（优先执行）",
+            render_chapter_writing_skill(writing_skill) if writing_skill else "未生成 AI Skill，使用基础章节写作规则。",
             "",
             "## 本地施组模式库规则",
             local_pattern or "无。",
@@ -741,6 +761,7 @@ def build_generation_metadata(
     generation_policy: ChapterGenerationPolicy | None = None,
     reference_atom_results: list[AtomRetrievalResult] | None = None,
     writing_unit_traces: list[WritingUnitTrace] | None = None,
+    writing_skill: ChapterWritingSkill | None = None,
 ) -> dict:
     guidance = guidance_for_node(node)
     pattern_text = _node_pattern_text(node)
@@ -763,6 +784,7 @@ def build_generation_metadata(
         "target_word_count": task.target_word_count,
         "source_section_ids": [match.section_id for match in task.source_matches],
         "writing_guidance": dump_model(guidance),
+        "chapter_writing_skill": dump_model(writing_skill) if writing_skill else None,
         "local_pattern_matches": [dump_model(match) for match in local_matches],
         "selected_pattern_keys": selected_pattern_keys,
         "generation_policy": dump_model(generation_policy) if generation_policy else None,

@@ -9,7 +9,9 @@ from .schemas import (
     ContentNodeUpdateRequest,
     ManualVersionRequest,
     OutlineAIProposalRequest,
+    OutlineProposalApplyRequest,
     OutlineNodeCreateRequest,
+    OutlineNodeMoveRequest,
     OutlineNodeUpdateRequest,
     PreGenerationOutlineRefineRequest,
     RevisionActionRequest,
@@ -27,6 +29,19 @@ def list_outline_nodes(project_id: str, request: Request):
         return request.app.state.workspace_store.list_outline_nodes(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/outline/overview")
+def get_outline_overview(project_id: str, request: Request):
+    try:
+        return request.app.state.workspace_store.outline_overview(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/outline/proposals")
+def list_outline_proposals(project_id: str, request: Request, status: str = "pending"):
+    return request.app.state.workspace_store.list_proposals(project_id, target_type="outline", status=status)
 
 
 @router.post("/projects/{project_id}/outline-nodes")
@@ -62,7 +77,13 @@ def delete_outline_node(project_id: str, node_id: str, request: Request):
 def propose_outline_change(project_id: str, payload: OutlineAIProposalRequest, request: Request):
     try:
         preview_nodes = payload.preview_nodes if payload.preview_nodes is not None else request.app.state.workspace_store.list_outline_nodes(project_id)
-        return request.app.state.workspace_store.propose_outline_change(project_id, payload.suggestion, preview_nodes)
+        return request.app.state.workspace_store.propose_outline_change(
+            project_id, payload.suggestion, preview_nodes,
+            scope_node_id=payload.scope_node_id,
+            scope_mode=payload.scope_mode,
+            preserve_top_level=payload.preserve_top_level,
+            max_changes=payload.max_changes,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -70,7 +91,12 @@ def propose_outline_change(project_id: str, payload: OutlineAIProposalRequest, r
 @router.post("/projects/{project_id}/outline/ai-plan")
 def propose_ai_outline_plan(project_id: str, payload: OutlineAIProposalRequest, request: Request):
     try:
-        return request.app.state.pipeline.propose_ai_outline(project_id, payload.suggestion)
+        return request.app.state.pipeline.propose_ai_outline(
+            project_id, payload.suggestion, scope_node_id=payload.scope_node_id,
+            scope_mode=payload.scope_mode,
+            preserve_top_level=payload.preserve_top_level, max_changes=payload.max_changes,
+            mode=payload.mode,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -115,9 +141,13 @@ def estimate_outline_word_counts(project_id: str, payload: WordCountEstimateRequ
 
 
 @router.post("/projects/{project_id}/outline/proposals/{proposal_id}/apply")
-def apply_outline_proposal(project_id: str, proposal_id: str, request: Request):
+def apply_outline_proposal(project_id: str, proposal_id: str, request: Request, payload: OutlineProposalApplyRequest | None = None):
     try:
-        result = request.app.state.workspace_store.apply_proposal(project_id, proposal_id)
+        result = request.app.state.workspace_store.apply_proposal(
+            project_id, proposal_id,
+            include_node_ids=payload.include_node_ids if payload else None,
+            exclude_node_ids=payload.exclude_node_ids if payload else [],
+        )
         pipeline = getattr(request.app.state, "pipeline", None)
         if pipeline is not None:
             try:
@@ -128,6 +158,30 @@ def apply_outline_proposal(project_id: str, proposal_id: str, request: Request):
         return result
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/outline-nodes/{node_id}/move")
+def move_outline_node(project_id: str, node_id: str, payload: OutlineNodeMoveRequest, request: Request):
+    try:
+        return request.app.state.workspace_store.move_outline_node(project_id, node_id, payload.direction)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/outline/snapshots/{snapshot_id}/restore")
+def restore_outline_snapshot(project_id: str, snapshot_id: str, request: Request):
+    try:
+        return request.app.state.workspace_store.restore_outline_snapshot(project_id, snapshot_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/projects/{project_id}/outline/proposals/{proposal_id}/reject")

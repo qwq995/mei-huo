@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 class ProjectCreateRequest(BaseModel):
     name: str = Field(default="宁夏煤火北一火区")
     template_id: str = Field(default="coal_fire")
+    project_tags: list[str] = Field(default_factory=list)
+    outline_template_id: str | None = None
 
 
 class ProjectTemplateUpdateRequest(BaseModel):
@@ -53,6 +55,10 @@ class OutlineNodeUpdateRequest(BaseModel):
     chapter_summary: dict | None = None
 
 
+class OutlineNodeMoveRequest(BaseModel):
+    direction: str
+
+
 class SupplementRequest(BaseModel):
     kind: str = "text"
     title: str = ""
@@ -94,6 +100,16 @@ class ChildChapterGenerateRequest(BaseModel):
 class OutlineAIProposalRequest(BaseModel):
     suggestion: str
     preview_nodes: list[dict] | None = None
+    scope_node_id: str | None = None
+    scope_mode: str = "subtree"
+    preserve_top_level: bool = True
+    max_changes: int = Field(default=20, ge=1, le=100)
+    mode: str = "balanced"
+
+
+class OutlineProposalApplyRequest(BaseModel):
+    include_node_ids: list[str] | None = None
+    exclude_node_ids: list[str] = Field(default_factory=list)
 
 
 class WordCountEstimateRequest(BaseModel):
@@ -189,6 +205,8 @@ class ProjectSummaryResponse(BaseModel):
     source_document_count: int
     section_count: int
     run_count: int
+    project_tags: list[str] = Field(default_factory=list)
+    selected_outline_template_id: str | None = None
 
 
 class GenerateResponse(BaseModel):
@@ -469,6 +487,8 @@ def project_summary(project) -> ProjectSummaryResponse:
         source_document_count=len(project.source_documents),
         section_count=len(project.sections),
         run_count=len(project.runs),
+        project_tags=project.project_tags,
+        selected_outline_template_id=project.selected_outline_template_id,
     )
 
 

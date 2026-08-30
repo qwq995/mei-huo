@@ -25,6 +25,11 @@ class ChapterPromptTest(unittest.TestCase):
             source_rules=["依据工程概况章节编写"],
             auto_fill=["归纳项目范围"],
             manual_fill=["合同工期需人工确认"],
+            chapter_summary={
+                "overview": "说明工程范围、施工条件和总体组织。",
+                "missing_information": ["最新施工图和合同工期"],
+                "key_points": ["施工准备", "工序衔接"],
+            },
         )
         task = ChapterTask(
             node_id=node.id,
@@ -114,6 +119,9 @@ class ChapterPromptTest(unittest.TestCase):
         self.assertIn("dense craft chapter", prompt)
         self.assertIn("硬上限", prompt)
         self.assertIn("主要来源摘要最多 6 条", prompt)
+        self.assertIn("当前节点纲要与待补信息", prompt)
+        self.assertIn("最新施工图和合同工期", prompt)
+        self.assertIn("待人工核验事项", prompt)
 
         metadata = build_generation_metadata(node=node, task=task, generation_policy=policy)
         self.assertIn("craft", metadata["selected_pattern_keys"])

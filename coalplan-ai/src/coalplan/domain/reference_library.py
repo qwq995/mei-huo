@@ -134,6 +134,11 @@ class ReferenceAtom(BaseModel):
     fact_variables: list[ReferenceFactVariable] = Field(default_factory=list)
     quality_score: float = 0.0
     confidence: float = 0.0
+    reference_value: str = "high"
+    value_reason: str = ""
+    reuse_scope: list[str] = Field(default_factory=list)
+    migration_warning: list[str] = Field(default_factory=list)
+    dedup_group: str = ""
     status: ReferenceReviewStatus = ReferenceReviewStatus.ai_candidate
     version: int = 1
 

@@ -139,5 +139,5 @@ function JobRow({ job, onRetry }: { job: GenerationJob; onRetry: () => Promise<v
 }
 
 export function jobLabel(type: GenerationJobType) {
-  return ({ directory_generation: "目录生成", chapter_generation: "章节生成", child_chapter_generation: "子章节生成", project_generation: "全量生成", quality_audit: "质量审查", outline_proposal: "目录调整建议", outline_refine: "目录精修建议", reference_import: "优秀施组切分" } as const)[type]
+  return ({ directory_generation: "目录生成", chapter_generation: "章节生成", child_chapter_generation: "子章节生成", project_generation: "全量生成", quality_audit: "质量审查", compliance_review: "规范审查", outline_proposal: "目录调整建议", outline_refine: "目录精修建议", reference_import: "优秀施组切分", reference_import_batch: "批量切分优秀施组" } as const)[type]
 }

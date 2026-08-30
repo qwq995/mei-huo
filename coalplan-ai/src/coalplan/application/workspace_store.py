@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from datetime import datetime
 from pathlib import Path
@@ -42,6 +43,55 @@ class WorkspaceStore:
                 .all()
             )
             return [_outline_dict(row) for row in rows]
+
+    def outline_overview(self, project_id: str) -> dict:
+        """Return a compact, prompt-ready overview of the whole editable outline."""
+        nodes = self.list_outline_nodes(project_id)
+        by_id = {node["node_id"]: node for node in nodes}
+        paths: dict[str, list[str]] = {}
+        for node in nodes:
+            chain: list[str] = []
+            cursor = node
+            seen: set[str] = set()
+            while cursor and cursor.get("node_id") not in seen:
+                node_id = cursor.get("node_id")
+                if node_id:
+                    seen.add(node_id)
+                    chain.append(cursor.get("title") or node_id)
+                cursor = by_id.get(cursor.get("parent_id")) if cursor else None
+            paths[node["node_id"]] = list(reversed(chain))
+        compact = []
+        for node in nodes:
+            summary = node.get("chapter_summary") or {}
+            readiness, readiness_reasons = _outline_readiness(node)
+            compact.append({
+                "node_id": node["node_id"],
+                "title": node.get("title", ""),
+                "level": node.get("level"),
+                "parent_id": node.get("parent_id"),
+                "path": paths.get(node["node_id"], []),
+                "enabled": node.get("enabled", True),
+                "target_word_count": node.get("target_word_count"),
+                "overview": summary.get("generated_overview") or summary.get("overview", ""),
+                "scope": summary.get("scope", []),
+                "key_points": summary.get("key_points", []),
+                "source_basis": summary.get("source_basis", []) or node.get("source_rules", []),
+                "missing_information": summary.get("missing_information", []),
+                "unresolved_items": summary.get("unresolved_items", []),
+                "auto_fill": node.get("auto_fill", []),
+                "manual_fill": node.get("manual_fill", []),
+                "generation_role": summary.get("generation_role", "leaf"),
+                "coverage_status": summary.get("coverage_status", "unknown"),
+                "readiness": readiness,
+                "readiness_reasons": readiness_reasons,
+            })
+        return {
+            "project_id": project_id,
+            "node_count": len(compact),
+            "summary_count": sum(bool(item["overview"]) for item in compact),
+            "missing_information_count": sum(bool(item["missing_information"] or item["unresolved_items"] or item["manual_fill"]) for item in compact),
+            "nodes": compact,
+        }
 
     def create_outline_node(self, project_id: str, payload: dict) -> dict:
         with self.session_factory() as session:
@@ -100,6 +150,33 @@ class WorkspaceStore:
             for key, column in mapping.items():
                 if key in payload:
                     setattr(row, column, _json(payload[key]))
+            row.updated_at = datetime.now()
+            session.commit()
+            return _outline_dict(row)
+
+    def move_outline_node(self, project_id: str, node_id: str, direction: str) -> dict:
+        if direction not in {"up", "down", "indent", "outdent"}:
+            raise ValueError("Unsupported outline move direction")
+        with self.session_factory() as session:
+            row = _get_outline(session, project_id, node_id)
+            siblings = session.query(ProjectOutlineNodeRecord).filter_by(project_id=project_id, parent_id=row.parent_id).order_by(ProjectOutlineNodeRecord.sort_order.asc()).all()
+            index = next((i for i, item in enumerate(siblings) if item.node_id == node_id), -1)
+            if direction in {"up", "down"}:
+                target_index = index - 1 if direction == "up" else index + 1
+                if target_index < 0 or target_index >= len(siblings):
+                    return _outline_dict(row)
+                other = siblings[target_index]
+                row.sort_order, other.sort_order = other.sort_order, row.sort_order
+            elif direction == "indent":
+                if index <= 0:
+                    return _outline_dict(row)
+                parent = siblings[index - 1]
+                row.parent_id = parent.node_id
+                row.level = parent.level + 1
+            elif row.parent_id:
+                parent = _get_outline(session, project_id, row.parent_id)
+                row.parent_id = parent.parent_id
+                row.level = max(1, parent.level)
             row.updated_at = datetime.now()
             session.commit()
             return _outline_dict(row)
@@ -436,10 +513,45 @@ class WorkspaceStore:
     def propose_chapter_edit(self, project_id: str, node_id: str, suggestion: str, preview_markdown: str) -> dict:
         return self._create_proposal(project_id, "chapter", node_id, suggestion, {"markdown": preview_markdown})
 
-    def propose_outline_change(self, project_id: str, suggestion: str, preview_nodes: list[dict]) -> dict:
-        return self._create_proposal(project_id, "outline", project_id, suggestion, {"nodes": preview_nodes}, reuse_pending=True)
+    def propose_outline_change(
+        self, project_id: str, suggestion: str, preview_nodes: list[dict], *,
+        scope_node_id: str | None = None, scope_mode: str = "subtree", preserve_top_level: bool = True,
+        max_changes: int | None = None,
+    ) -> dict:
+        current = self.list_outline_nodes(project_id)
+        fingerprint = _outline_fingerprint(current)
+        strict_controls = scope_node_id is not None or max_changes is not None or scope_mode != "subtree"
+        allowed = _outline_scope_ids(current, scope_node_id, include_descendants=scope_mode != "node")
+        current_by_id = {item["node_id"]: item for item in current}
+        filtered: list[dict] = []
+        for node in preview_nodes:
+            node_id = node.get("node_id")
+            parent_id = node.get("parent_id")
+            is_existing = node_id in {item["node_id"] for item in current}
+            in_scope = node_id in allowed or (not is_existing and (parent_id in allowed if scope_node_id else True))
+            if preserve_top_level and is_existing and int(current_by_id[node_id].get("level") or 0) == 1:
+                in_scope = False
+            if in_scope:
+                filtered.append(node)
+        changed = [node for node in filtered if node.get("__action", "change") != "keep"]
+        if max_changes is not None and len(changed) > max_changes:
+            raise ValueError(f"AI 方案包含 {len(changed)} 项变更，超过本次上限 {max_changes}，请缩小调整范围。")
+        preview = {
+            "nodes": filtered,
+            "outline_fingerprint": fingerprint if strict_controls else None,
+            "scope_node_id": scope_node_id,
+            "scope_mode": scope_mode,
+            "preserve_top_level": preserve_top_level,
+            "max_changes": max_changes,
+            "changed_node_ids": [node.get("node_id") for node in changed if node.get("node_id")],
+            "change_summary": {"total": len(changed)},
+        }
+        return self._create_proposal(project_id, "outline", project_id, suggestion, preview, reuse_pending=True)
 
-    def apply_proposal(self, project_id: str, proposal_id: str) -> dict:
+    def apply_proposal(
+        self, project_id: str, proposal_id: str, *,
+        include_node_ids: list[str] | None = None, exclude_node_ids: list[str] | None = None,
+    ) -> dict:
         with self.session_factory() as session:
             proposal = session.get(AIChangeProposalRecord, proposal_id)
             if proposal is None or proposal.project_id != project_id:
@@ -471,9 +583,17 @@ class WorkspaceStore:
                 session.add(version)
                 node.selected_version_id = version.id
             elif proposal.target_type == "outline":
+                current = [_outline_dict(row) for row in session.query(ProjectOutlineNodeRecord).filter_by(project_id=project_id).all()]
+                expected = data.get("outline_fingerprint")
+                if expected and expected != _outline_fingerprint(current):
+                    raise ValueError("目录在生成方案后已发生变化，请重新生成 AI 方案后再应用。")
+                snapshot_id = new_id("outline_snapshot")
+                self.artifacts.write_text(project_id, f"outline/snapshots/{snapshot_id}.json", _json({"snapshot_id": snapshot_id, "nodes": current}))
+                excluded = set(exclude_node_ids or [])
+                included = set(include_node_ids) if include_node_ids is not None else None
                 for patch in data.get("nodes", []):
                     node_id = patch.get("node_id")
-                    if not node_id:
+                    if not node_id or node_id in excluded or (included is not None and node_id not in included):
                         continue
                     row = session.query(ProjectOutlineNodeRecord).filter_by(project_id=project_id, node_id=node_id).one_or_none()
                     if row is None:
@@ -529,6 +649,10 @@ class WorkspaceStore:
                     row.updated_at = datetime.now()
             proposal.status = "applied"
             proposal.applied_at = datetime.now()
+            if proposal.target_type == "outline":
+                data["snapshot_id"] = snapshot_id
+                data["applied_node_ids"] = [node.get("node_id") for node in data.get("nodes", []) if node.get("node_id") and node.get("node_id") not in (exclude_node_ids or []) and (include_node_ids is None or node.get("node_id") in include_node_ids)]
+                proposal.preview_json = _json(data)
             session.commit()
             if proposal.target_type == "chapter":
                 self._ensure_content_tree(
@@ -540,6 +664,33 @@ class WorkspaceStore:
                     fallback_content_tree=fallback_tree,
                 )
             return _proposal_dict(proposal)
+
+    def restore_outline_snapshot(self, project_id: str, snapshot_id: str) -> dict:
+        path = self.artifacts.root / project_id / "outline" / "snapshots" / f"{snapshot_id}.json"
+        if not path.exists():
+            raise KeyError(snapshot_id)
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+        with self.session_factory() as session:
+            rows = session.query(ProjectOutlineNodeRecord).filter_by(project_id=project_id).all()
+            for row in rows:
+                session.delete(row)
+            session.flush()
+            for item in snapshot.get("nodes", []):
+                values = dict(item)
+                values.pop("children", None)
+                session.add(ProjectOutlineNodeRecord(
+                    id=f"{project_id}:{values['node_id']}", project_id=project_id,
+                    node_id=values["node_id"], parent_id=values.get("parent_id"), title=values["title"],
+                    level=int(values.get("level", 1)), sort_order=int(values.get("sort_order", 0)),
+                    enabled=bool(values.get("enabled", True)), source_rules_json=_json(values.get("source_rules", [])),
+                    auto_fill_json=_json(values.get("auto_fill", [])), manual_fill_json=_json(values.get("manual_fill", [])),
+                    special_notes_json=_json(values.get("special_notes", [])), target_word_count=values.get("target_word_count"),
+                    origin=values.get("origin", "snapshot"), template_anchor_id=values.get("template_anchor_id"),
+                    source_hints_json=_json(values.get("source_hints", [])), matched_skill_keys_json=_json(values.get("matched_skill_keys", [])),
+                    chapter_summary_json=_json(values.get("chapter_summary", {})),
+                ))
+            session.commit()
+        return {"restored": True, "snapshot_id": snapshot_id, "node_count": len(snapshot.get("nodes", []))}
 
     def reject_proposal(
         self,
@@ -831,7 +982,7 @@ def _dedupe_text(items: list[str]) -> list[str]:
 
 
 def _outline_dict(row: ProjectOutlineNodeRecord) -> dict:
-    return {
+    payload = {
         "id": row.node_id,
         "node_id": row.node_id,
         "parent_id": row.parent_id,
@@ -851,6 +1002,28 @@ def _outline_dict(row: ProjectOutlineNodeRecord) -> dict:
         "chapter_summary": _loads(row.chapter_summary_json),
         "selected_version_id": row.selected_version_id,
     }
+    readiness, reasons = _outline_readiness(payload)
+    payload["readiness"] = readiness
+    payload["readiness_reasons"] = reasons
+    return payload
+
+
+def _outline_readiness(node: dict) -> tuple[str, list[str]]:
+    if node.get("enabled") is False:
+        return "disabled", ["节点已禁用"]
+    summary = node.get("chapter_summary") or {}
+    if summary.get("generation_role") == "container":
+        return "container", ["父节点用于组织目录，正文通常在下级节点生成"]
+    reasons: list[str] = []
+    if summary.get("coverage_status") not in {"grounded"} and not node.get("source_hints"):
+        reasons.append("尚未确认投标来源")
+    if summary.get("missing_information"):
+        reasons.append(f"待补资料 {len(summary['missing_information'])} 项")
+    if summary.get("unresolved_items"):
+        reasons.append(f"待确认事项 {len(summary['unresolved_items'])} 项")
+    if node.get("manual_fill"):
+        reasons.append(f"人工补充 {len(node['manual_fill'])} 项")
+    return ("needs_confirmation" if reasons else "ready"), reasons
 
 
 def _walk_template_nodes(nodes: list[TemplateNode], parent_id: str | None = None):
@@ -902,16 +1075,44 @@ def _version_dict(row: ChapterVersionRecord) -> dict:
 
 
 def _proposal_dict(row: AIChangeProposalRecord) -> dict:
-    return {
+    preview = _loads(row.preview_json)
+    payload = {
         "id": row.id,
         "target_type": row.target_type,
         "target_id": row.target_id,
         "suggestion": row.suggestion,
-        "preview": _loads(row.preview_json),
+        "preview": preview,
         "status": row.status,
         "created_at": row.created_at.isoformat(),
         "applied_at": row.applied_at.isoformat() if row.applied_at else None,
     }
+    if row.target_type == "outline" and isinstance(preview, dict):
+        payload["snapshot_id"] = preview.get("snapshot_id")
+    return payload
+
+
+def _outline_fingerprint(nodes: list[dict]) -> str:
+    normalized = [{key: node.get(key) for key in ("node_id", "parent_id", "title", "level", "sort_order", "enabled", "target_word_count", "source_rules", "auto_fill", "manual_fill", "special_notes")} for node in nodes]
+    normalized.sort(key=lambda item: (item.get("sort_order") or 0, item.get("node_id") or ""))
+    return hashlib.sha256(json.dumps(normalized, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _outline_scope_ids(nodes: list[dict], scope_node_id: str | None, *, include_descendants: bool = True) -> set[str]:
+    if not scope_node_id:
+        return {node["node_id"] for node in nodes}
+    children: dict[str | None, list[str]] = {}
+    for node in nodes:
+        children.setdefault(node.get("parent_id"), []).append(node["node_id"])
+    result: set[str] = set()
+    pending = [scope_node_id]
+    while pending:
+        node_id = pending.pop()
+        if node_id in result:
+            continue
+        result.add(node_id)
+        if include_descendants:
+            pending.extend(children.get(node_id, []))
+    return result
 
 
 def _json(value) -> str:

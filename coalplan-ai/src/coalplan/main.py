@@ -5,6 +5,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 
 from coalplan.application.run_generation_pipeline import GenerationPipeline
 from coalplan.application.generation_jobs import GenerationJobManager
@@ -29,6 +30,7 @@ from coalplan.interfaces.api.routes_templates import router as templates_router
 from coalplan.interfaces.api.routes_workspace import router as workspace_router
 from coalplan.interfaces.api.routes_jobs import router as jobs_router
 from coalplan.interfaces.api.routes_standard_constraints import router as standard_constraints_router
+from coalplan.interfaces.api.routes_outline_templates import router as outline_templates_router
 from coalplan.settings import Settings, get_settings
 
 
@@ -51,6 +53,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.pipeline,
         standard_constraints=app.state.standard_constraints,
     )
+
+    @app.get("/", include_in_schema=False)
+    def api_root() -> RedirectResponse:
+        """Keep the API port friendly when opened directly in a browser."""
+        return RedirectResponse("http://127.0.0.1:5173/", status_code=307)
+
+    @app.get("/health", include_in_schema=False)
+    def health() -> dict[str, str]:
+        return {"status": "ok", "service": "coalplan-api"}
+
     app.include_router(projects_router)
     app.include_router(templates_router)
     app.include_router(generation_router)
@@ -60,6 +72,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(reference_library_router)
     app.include_router(jobs_router)
     app.include_router(standard_constraints_router)
+    app.include_router(outline_templates_router)
     return app
 
 

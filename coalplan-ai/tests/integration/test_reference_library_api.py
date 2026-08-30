@@ -55,6 +55,7 @@ class ReferenceLibraryApiTest(unittest.TestCase):
                 self.assertIn("/reference-library/import-ai", openapi["paths"])
                 self.assertIn("/reference-library/retrieve", openapi["paths"])
                 self.assertIn("/reference-library/upload-markdown", openapi["paths"])
+                self.assertIn("/reference-library/management", openapi["paths"])
 
                 documents = await client.get("/reference-library/documents")
                 self.assertEqual(200, documents.status_code)
@@ -77,6 +78,23 @@ class ReferenceLibraryApiTest(unittest.TestCase):
                 self.assertEqual(200, summary.status_code)
                 self.assertEqual(1, summary.json()["published_count"])
                 self.assertIn("workflow", summary.json())
+
+                management = await client.get("/reference-library/management")
+                self.assertEqual(200, management.status_code)
+                self.assertEqual(document.id, management.json()["documents"][0]["id"])
+                self.assertEqual(1, management.json()["documents"][0]["atom_counts"]["published"])
+                self.assertEqual(atom.id, management.json()["atoms"][0]["id"])
+
+                project = app.state.pipeline.create_project("资料展示接口项目", template_id="coal_fire")
+                app.state.pipeline.ingest_bid_markdown(
+                    project.id,
+                    file_name="投标资料.md",
+                    content="# 工程概况\n\n## 施工条件\n水电工程施工条件。",
+                )
+                source_documents = await client.get(f"/projects/{project.id}/source-documents")
+                self.assertEqual(200, source_documents.status_code)
+                self.assertEqual("投标资料.md", source_documents.json()[0]["file_name"])
+                self.assertEqual(2, source_documents.json()[0]["section_count"])
 
                 uploaded = await client.post(
                     "/reference-library/upload-markdown",

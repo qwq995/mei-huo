@@ -47,7 +47,7 @@ def list_chapters(project_id: str, request: Request):
                 "node_id": task.node_id,
                 "title": task.title,
                 "target_word_count": task.target_word_count,
-                "status": task.status.value,
+                "status": _effective_task_status(request, project_id, task),
                 "source_matches": [_dump(match) for match in task.source_matches],
                 "source_mapping": _dump(task.source_mapping) if task.source_mapping else None,
                 "draft_id": task.draft_id,
@@ -57,6 +57,21 @@ def list_chapters(project_id: str, request: Request):
         ]
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/partial-merge", response_model=GenerateResponse)
+def partial_merge_project(project_id: str, request: Request):
+    """Create a clearly marked stage manuscript while chapters are still missing."""
+    pipeline = request.app.state.pipeline
+    try:
+        ensure_generation_window(pipeline, project_id)
+        return run_summary(pipeline.merge_partial(project_id))
+    except HTTPException:
+        raise
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/projects/{project_id}/generation-context", response_model=dict)
@@ -73,6 +88,19 @@ def get_generation_context(project_id: str, request: Request):
 def preview_chapter_writing_units(project_id: str, node_id: str, request: Request):
     try:
         return request.app.state.pipeline.preview_chapter_writing_units(project_id, node_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/chapters/{node_id}/writing-skill", response_model=dict)
+def generate_chapter_writing_skill(project_id: str, node_id: str, request: Request):
+    try:
+        ensure_generation_window(request.app.state.pipeline, project_id)
+        return request.app.state.pipeline.generate_chapter_writing_skill_for_node(project_id, node_id, force=True)
+    except HTTPException:
+        raise
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -320,3 +348,16 @@ def _selected_version(request: Request, project_id: str, node_id: str) -> dict |
         return store.get_version(project_id, node_id, selected_id)
     except Exception:
         return None
+
+
+def _effective_task_status(request: Request, project_id: str, task) -> str:
+    """Treat a persisted selected version as generated after imports or service restarts."""
+    if task.status.value in {"passed", "needs_repair", "failed", "running"}:
+        return task.status.value
+    try:
+        workspace = request.app.state.workspace_store.get_workspace(project_id, task.node_id)
+        if workspace.get("selected_version_id"):
+            return "passed"
+    except Exception:
+        pass
+    return task.status.value
