@@ -76,7 +76,9 @@ function joinLines(value?: string[]): string {
 
 export function OutlineStep({ project, onNext }: { project: ProjectResponse; onNext: () => void }) {
   const toast = useToast()
-  const { startJob, activeJob } = useJobs()
+  const { startJob, activeJob, jobs } = useJobs()
+  const fullGeneration = jobs.find((job) => job.job_type === "project_generation") ?? null
+  const outlineEditingBlocked = fullGeneration?.status === "queued" || fullGeneration?.status === "running"
   const outline = useAsyncData<OutlineNode[]>(() => listOutlineNodes(project.project_id), [project.project_id])
   const [generating, setGenerating] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -148,6 +150,10 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
   }
 
   const requestGenerate = () => {
+    if (outlineEditingBlocked) {
+      toast.info("全量生成正在执行，请先暂停或等待完成后再修改目录")
+      return
+    }
     if (outline.data?.length || editorDirty) setConfirmRegenerate(true)
     else void handleGenerate()
   }
@@ -161,6 +167,10 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
   }
 
   const openNodeAction = (kind: NodeAction["kind"], node: OutlineNode) => {
+    if (outlineEditingBlocked) {
+      toast.info("全量生成正在执行，目录修改将在暂停或完成后开放")
+      return
+    }
     if (editorDirty && node.node_id !== selectedId) {
       setPendingSelection(node.node_id)
       return
@@ -225,7 +235,7 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
         </div>
         <div className="flex shrink-0 items-center gap-2 sm:pl-4">
           {outline.data?.length ? <span className="text-[11px] text-muted-foreground">完成后再进入章节生成</span> : null}
-          <Button size="sm" variant={outline.data?.length ? "outline" : "accent"} onClick={requestGenerate} loading={generating || activeJob?.job_type === "directory_generation"} icon={<Wand2 className="h-3.5 w-3.5" />}>
+          <Button size="sm" variant={outline.data?.length ? "outline" : "accent"} onClick={requestGenerate} loading={generating || activeJob?.job_type === "directory_generation"} disabled={outlineEditingBlocked} icon={<Wand2 className="h-3.5 w-3.5" />}>
             {outline.data?.length ? "重新生成目录" : "生成目录"}
           </Button>
         </div>
@@ -240,6 +250,7 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
           ["待补信息", outlineStats.missing, "生成前需人工确认"],
         ].map(([label, value, hint]) => <span key={label} title={String(hint)} className="inline-flex items-center gap-1.5 text-muted-foreground"><span>{label}</span><strong className="text-sm text-foreground">{value}</strong></span>)}
       </div>
+      {outlineEditingBlocked ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius)] border border-[var(--color-warning)]/40 bg-[var(--color-warning)]/[0.10] px-3 py-2 text-xs text-[var(--color-warning)]"><span>全量生成正在执行，目录暂时只读。</span><span className="font-medium">暂停或完成后可编辑</span></div> : null}
       {editorDirty ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius)] border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900"><span>当前节点有未保存修改，切换节点或重新生成前请先保存。</span><span className="font-medium">未保存</span></div> : null}
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.25fr)_minmax(420px,0.9fr)] lg:items-start">
       <Card className="flex min-w-0 flex-col p-5">
@@ -267,7 +278,7 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
               <div className="mb-3 flex flex-col gap-2">
                 <div className="flex items-center gap-2">
                   <div className="relative min-w-0 flex-1"><Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" /><TextInput value={treeSearch} onChange={(e) => setTreeSearch(e.target.value)} placeholder="搜索章节标题或概括" className="h-9 pl-8" /></div>
-                  <Button variant="outline" size="sm" onClick={handleEstimate} icon={<Calculator className="h-3.5 w-3.5" />}>估算字数</Button>
+                  <Button variant="outline" size="sm" onClick={handleEstimate} disabled={outlineEditingBlocked} icon={<Calculator className="h-3.5 w-3.5" />}>估算字数</Button>
                 </div>
                 <div className="flex items-center gap-1 rounded-[var(--radius)] border border-border bg-muted/30 p-1 self-start">
                   <button type="button" onClick={() => setViewMode("tree")} className={cn("rounded px-3 py-1.5 text-xs", viewMode === "tree" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground")}>目录树</button>
@@ -293,7 +304,7 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
         </div>
       </Card>
 
-      <div className="flex min-w-0 flex-col gap-5 lg:sticky lg:top-24">
+      <div className={cn("flex min-w-0 flex-col gap-5 lg:sticky lg:top-24", outlineEditingBlocked && "pointer-events-none opacity-60")}>
         <div className="flex items-center gap-2 text-[11px] text-muted-foreground"><span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[10px] text-primary-foreground">2</span><span className="font-medium text-foreground">处理当前节点</span><ChevronRight className="h-3 w-3" /><span>保存目录或提交 AI 方案</span></div>
         {selected ? <OutlineNodeSummary node={selected} nextMissing={nextMissing} onSelectNext={nextMissing ? requestSelection : undefined} onOpenAi={() => setDetailMode("ai")} /> : null}
         <div className="rounded-[var(--radius)] border border-border bg-card p-1">

@@ -6,9 +6,12 @@ from coalplan.application.outline_template_library import (
     OutlineTemplateRecommendationQuery,
     build_outline_template_library,
     default_library_dir,
+    delete_outline_template,
+    import_outline_templates,
     load_outline_template,
     load_outline_template_index,
     recommend_outline_templates,
+    update_outline_template,
 )
 
 router = APIRouter(prefix="/outline-template-library", tags=["outline-template-library"])
@@ -25,6 +28,35 @@ def get_outline_template(template_id: str):
     if template is None:
         raise HTTPException(status_code=404, detail="目录模板不存在")
     return template.model_dump()
+
+
+@router.post("/import")
+def import_templates(payload: dict):
+    items = payload.get("templates") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="JSON 顶层必须包含 templates 数组")
+    return import_outline_templates(items)
+
+
+@router.patch("/{template_id}")
+def patch_outline_template(template_id: str, payload: dict):
+    try:
+        return update_outline_template(template_id, payload).model_dump()
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="目录模板不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/{template_id}")
+def remove_outline_template(template_id: str):
+    try:
+        delete_outline_template(template_id)
+        return {"deleted": True, "template_id": template_id}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="目录模板不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/build")

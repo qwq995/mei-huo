@@ -4,6 +4,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
 from coalplan.interfaces.api.execution_window_guard import ensure_generation_window
 from coalplan.application.generation_jobs import JobConflictError
+from coalplan.interfaces.api.outline_edit_guard import ensure_outline_editable
 
 from .schemas import (
     AIEditProposalRequest,
@@ -54,6 +55,7 @@ def list_outline_proposals(project_id: str, request: Request, status: str = "pen
 @router.post("/projects/{project_id}/outline-nodes")
 def create_outline_node(project_id: str, payload: OutlineNodeCreateRequest, request: Request):
     try:
+        ensure_outline_editable(request, project_id)
         return request.app.state.workspace_store.create_outline_node(project_id, payload.model_dump(exclude_none=True))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -64,6 +66,7 @@ def create_outline_node(project_id: str, payload: OutlineNodeCreateRequest, requ
 @router.patch("/projects/{project_id}/outline-nodes/{node_id}")
 def update_outline_node(project_id: str, node_id: str, payload: OutlineNodeUpdateRequest, request: Request):
     try:
+        ensure_outline_editable(request, project_id)
         return request.app.state.workspace_store.update_outline_node(project_id, node_id, payload.model_dump(exclude_unset=True))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -74,6 +77,7 @@ def update_outline_node(project_id: str, node_id: str, payload: OutlineNodeUpdat
 @router.delete("/projects/{project_id}/outline-nodes/{node_id}")
 def delete_outline_node(project_id: str, node_id: str, request: Request, mode: str = "subtree"):
     try:
+        ensure_outline_editable(request, project_id)
         if mode not in {"node", "subtree"}:
             raise HTTPException(status_code=400, detail="删除模式只能是 node 或 subtree")
         request.app.state.workspace_store.delete_outline_node(project_id, node_id, delete_subtree=mode == "subtree")
@@ -85,6 +89,7 @@ def delete_outline_node(project_id: str, node_id: str, request: Request, mode: s
 @router.post("/projects/{project_id}/outline/propose-ai-change")
 def propose_outline_change(project_id: str, payload: OutlineAIProposalRequest, request: Request):
     try:
+        ensure_outline_editable(request, project_id)
         preview_nodes = payload.preview_nodes if payload.preview_nodes is not None else request.app.state.workspace_store.list_outline_nodes(project_id)
         return request.app.state.workspace_store.propose_outline_change(
             project_id, payload.suggestion, preview_nodes,
@@ -100,6 +105,7 @@ def propose_outline_change(project_id: str, payload: OutlineAIProposalRequest, r
 @router.post("/projects/{project_id}/outline/ai-plan")
 def propose_ai_outline_plan(project_id: str, payload: OutlineAIProposalRequest, request: Request):
     try:
+        ensure_outline_editable(request, project_id)
         return request.app.state.pipeline.propose_ai_outline(
             project_id, payload.suggestion, scope_node_id=payload.scope_node_id,
             scope_mode=payload.scope_mode,
@@ -115,6 +121,7 @@ def propose_ai_outline_plan(project_id: str, payload: OutlineAIProposalRequest, 
 @router.post("/projects/{project_id}/outline/control-plan-proposal")
 def propose_control_plan_outline_repair(project_id: str, request: Request):
     try:
+        ensure_outline_editable(request, project_id)
         return request.app.state.pipeline.propose_control_outline_repair(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -125,6 +132,7 @@ def propose_control_plan_outline_repair(project_id: str, request: Request):
 @router.post("/projects/{project_id}/outline/pre-generation-refine")
 def propose_pre_generation_outline_refine(project_id: str, payload: PreGenerationOutlineRefineRequest, request: Request):
     try:
+        ensure_outline_editable(request, project_id)
         return request.app.state.pipeline.propose_pre_generation_outline_refine(
             project_id,
             mode=payload.mode,
@@ -142,6 +150,7 @@ def propose_pre_generation_outline_refine(project_id: str, payload: PreGeneratio
 @router.post("/projects/{project_id}/outline/word-counts/estimate")
 def estimate_outline_word_counts(project_id: str, payload: WordCountEstimateRequest, request: Request):
     try:
+        ensure_outline_editable(request, project_id)
         return request.app.state.pipeline.estimate_outline_word_counts(project_id, payload.reference_markdown)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -152,6 +161,7 @@ def estimate_outline_word_counts(project_id: str, payload: WordCountEstimateRequ
 @router.post("/projects/{project_id}/outline/proposals/{proposal_id}/apply")
 def apply_outline_proposal(project_id: str, proposal_id: str, request: Request, payload: OutlineProposalApplyRequest | None = None):
     try:
+        ensure_outline_editable(request, project_id)
         result = request.app.state.workspace_store.apply_proposal(
             project_id, proposal_id,
             include_node_ids=payload.include_node_ids if payload else None,
@@ -176,6 +186,7 @@ def apply_outline_proposal(project_id: str, proposal_id: str, request: Request, 
 @router.post("/projects/{project_id}/outline-nodes/{node_id}/move")
 def move_outline_node(project_id: str, node_id: str, payload: OutlineNodeMoveRequest, request: Request):
     try:
+        ensure_outline_editable(request, project_id)
         return request.app.state.workspace_store.move_outline_node(project_id, node_id, payload.direction)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -186,6 +197,7 @@ def move_outline_node(project_id: str, node_id: str, payload: OutlineNodeMoveReq
 @router.post("/projects/{project_id}/outline/snapshots/{snapshot_id}/restore")
 def restore_outline_snapshot(project_id: str, snapshot_id: str, request: Request):
     try:
+        ensure_outline_editable(request, project_id)
         return request.app.state.workspace_store.restore_outline_snapshot(project_id, snapshot_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

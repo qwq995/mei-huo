@@ -91,7 +91,7 @@ export function ExportStep({ project }: { project: ProjectResponse }) {
     if (!activeJob || activeJob.job_type !== "project_generation") return
     try {
       await pauseJob(activeJob.job_id)
-      toast.success("已收到暂止请求，将在当前章节完成后暂停")
+      toast.success("项目已立即暂停，未完成内容已保留")
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "暂止失败")
     }

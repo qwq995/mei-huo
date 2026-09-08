@@ -11,6 +11,7 @@ from coalplan.infrastructure.database.models import GenerationJobRecord
 from coalplan.application.reference_import_service import process_reference_markdown
 from coalplan.application.compliance_review import run_compliance_review
 from coalplan.application.supplement_batch_ai import suggest_supplement_values
+from coalplan.application.generation_pause import GenerationPauseRequested
 
 
 ACTIVE_STATUSES = {"queued", "running"}
@@ -38,8 +39,7 @@ class JobConflictError(RuntimeError):
     pass
 
 
-class PauseRequested(RuntimeError):
-    pass
+PauseRequested = GenerationPauseRequested
 
 
 def _parallelism(payload: dict[str, Any]) -> int:
@@ -123,7 +123,10 @@ class GenerationJobManager:
             if row.status not in ACTIVE_STATUSES:
                 raise ValueError("任务当前不在执行中，无法暂止。")
             row.pause_requested = True
-            row.message = "已收到暂止请求，将在当前章节完成后暂停"
+            row.status = "paused"
+            row.stage = "paused"
+            row.completed_at = datetime.now()
+            row.message = "项目已立即暂停，未完成内容已保留"
             row.updated_at = datetime.now()
             session.commit()
             return _job_dict(row)
@@ -137,6 +140,8 @@ class GenerationJobManager:
                 if self._pause_requested(job_id):
                     raise PauseRequested()
             result = self._execute(job["project_id"], job["job_type"], job["payload"], progress)
+            if self._pause_requested(job_id):
+                raise PauseRequested()
             status = "partial" if _is_partial_result(result) else "completed"
             latest = self._get_by_id(job_id)
             self._update(
@@ -156,7 +161,7 @@ class GenerationJobManager:
                 stage="paused",
                 current=int(latest.get("current") or 0),
                 total=int(latest.get("total") or 0),
-                message="已暂止，已完成内容和进度已保留，可继续全量生成",
+                message="已暂停，已完成内容和进度已保留，可继续全量生成",
                 completed=True,
             )
         except Exception as exc:

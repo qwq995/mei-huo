@@ -53,7 +53,9 @@ export type ProjectResponse = {
   selected_outline_template_id?: string | null;
 };
 
-export type OutlineTemplateSummary = { template_id: string; file_name: string; project_name: string; project_type: string; tags: string[]; key_topics: string[]; title_count: number; leaf_count: number; adjustment_count: number; top_headings: string[] };
+export type OutlineTemplateSummary = { template_id: string; file_name: string; source_path?: string; project_name: string; project_type: string; tags: string[]; key_topics: string[]; title_count: number; leaf_count: number; adjustment_count: number; top_headings: string[] };
+export type OutlineTemplateNode = { node_id: string; title: string; level: number; parent_id?: string | null; order: number; source_line: number; source_path: string[]; topic_keys: string[]; is_leaf: boolean };
+export type OutlineTemplateDocument = OutlineTemplateSummary & { source_path: string; nodes: OutlineTemplateNode[]; adjustment_log?: Array<Record<string, unknown>>; guidance_version?: string; extracted_at?: string };
 export type OutlineTemplateRecommendation = { template_id: string; rank: number; score: number; match_reason: string; recommended_use?: string; risks?: string[] };
 export type OutlineTemplateRecommendationResponse = { query: { project_name: string; tags: string[]; project_type: string; limit: number }; candidates: OutlineTemplateSummary[]; recommendations: OutlineTemplateRecommendation[]; generated_by: string };
 
@@ -981,6 +983,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const listTemplates = () => request<TemplateSummary[]>("/templates");
 export const getTemplateTree = async (templateId: string) => (await request<{ nodes: TemplateNode[] }>(`/templates/${templateId}`)).nodes;
+export const getOutlineTemplate = (templateId: string) => request<OutlineTemplateDocument>(`/outline-template-library/${templateId}`);
+export const listOutlineTemplates = async () => (await request<{ templates: OutlineTemplateSummary[] }>("/outline-template-library")).templates;
+export const importOutlineTemplates = (templates: OutlineTemplateDocument[]) => request<{ imported: string[]; failed: Array<{ index: number; error: string }>; imported_count: number; failed_count: number }>("/outline-template-library/import", { method: "POST", body: JSON.stringify({ templates }) });
+export const updateOutlineTemplate = (templateId: string, payload: Partial<OutlineTemplateDocument>) => request<OutlineTemplateDocument>(`/outline-template-library/${templateId}`, { method: "PATCH", body: JSON.stringify(payload) });
+export const deleteOutlineTemplate = (templateId: string) => request<{ deleted: boolean; template_id: string }>(`/outline-template-library/${templateId}`, { method: "DELETE" });
 export const listProjects = () => request<ProjectResponse[]>("/projects");
 export const getProject = (projectId: string) => request<ProjectResponse>(`/projects/${projectId}`);
 export const updateProjectMetadata = (projectId: string, payload: { name: string; project_tags: string[] }) => request<ProjectResponse>(`/projects/${projectId}`, { method: "PATCH", body: JSON.stringify(payload) });

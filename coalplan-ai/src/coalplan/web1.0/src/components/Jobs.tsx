@@ -38,6 +38,7 @@ export function JobsProvider({ projectId, children }: { projectId: string | null
         if (before && before !== job.status && terminal.has(job.status)) {
           if (job.status === "completed") toast.success(`${jobLabel(job.job_type)}已完成`)
           else if (job.status === "partial") toast.info(`${jobLabel(job.job_type)}已结束，仍有内容需要处理`)
+          else if (job.status === "paused") toast.info(`${jobLabel(job.job_type)}已暂停，进度已保留`)
           else toast.error(`${jobLabel(job.job_type)}未完成，可在任务中心重试`)
           window.dispatchEvent(new CustomEvent("coalplan:job-finished", { detail: job }))
         }
@@ -115,7 +116,7 @@ export function TaskCenter() {
             <Button size="icon" variant="ghost" onClick={() => void refresh()} aria-label="刷新任务"><RefreshCw className="h-4 w-4" /></Button>
           </div>
           <ul className="max-h-[420px] space-y-2 overflow-y-auto">
-            {jobs.map((job) => <JobRow key={job.job_id} job={job} onPause={async () => { try { await pauseJob(job.job_id); toast.success("已收到暂止请求，将在当前章节完成后暂停") } catch (err) { toast.error(err instanceof Error ? err.message : "暂止失败") } }} onRetry={async () => { try { await retryJob(job.job_id); toast.success(job.status === "paused" ? "已从保留进度继续生成" : "已重新提交任务") } catch (err) { toast.error(err instanceof Error ? err.message : "重试失败") } }} />)}
+            {jobs.map((job) => <JobRow key={job.job_id} job={job} onPause={async () => { try { await pauseJob(job.job_id); toast.success("项目已立即暂停，未完成内容已保留") } catch (err) { toast.error(err instanceof Error ? err.message : "暂停失败") } }} onRetry={async () => { try { await retryJob(job.job_id); toast.success(job.status === "paused" ? "已从保留进度继续生成" : "已重新提交任务") } catch (err) { toast.error(err instanceof Error ? err.message : "重试失败") } }} />)}
           </ul>
         </div>
       ) : null}
@@ -125,12 +126,12 @@ export function TaskCenter() {
 
 function JobRow({ job, onPause, onRetry }: { job: GenerationJob; onPause: () => Promise<void>; onRetry: () => Promise<void> }) {
   const running = !terminal.has(job.status)
-  const Icon = running ? Loader2 : job.status === "completed" ? CheckCircle2 : job.status === "partial" ? AlertTriangle : XCircle
+  const Icon = running ? Loader2 : job.status === "completed" ? CheckCircle2 : job.status === "partial" ? AlertTriangle : job.status === "paused" ? Pause : XCircle
   const progress = job.total > 0 ? Math.min(100, Math.round(job.current / job.total * 100)) : null
   return (
     <li className="rounded-[var(--radius)] border border-border p-3">
       <div className="flex items-start gap-2.5">
-        <Icon className={cn("mt-0.5 h-4 w-4 shrink-0", running && "animate-spin text-primary", job.status === "completed" && "text-[var(--color-success)]", ["partial", "interrupted"].includes(job.status) && "text-[var(--color-warning)]", job.status === "failed" && "text-[var(--color-danger)]")} />
+          <Icon className={cn("mt-0.5 h-4 w-4 shrink-0", running && "animate-spin text-primary", job.status === "completed" && "text-[var(--color-success)]", ["partial", "interrupted", "paused"].includes(job.status) && "text-[var(--color-warning)]", job.status === "failed" && "text-[var(--color-danger)]")} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
             <p className="truncate text-xs font-semibold text-foreground">{jobLabel(job.job_type)}</p>

@@ -246,11 +246,12 @@ def _extract_evidence_quotes(prompt: str) -> list[str]:
     )
     if not spans:
         spans = re.findall(r"^-\s*(ev_[0-9a-f]{12})：(.*)$", block, flags=re.M)
-    return [
-        f"{evidence_id}：{re.sub(r'\s+', ' ', quote).strip()}"
-        for evidence_id, quote in spans
-        if quote.strip()
-    ]
+    results = []
+    for evidence_id, quote in spans:
+        if quote.strip():
+            normalized_quote = re.sub(r"\s+", " ", quote).strip()
+            results.append(f"{evidence_id}：{normalized_quote}")
+    return results
 
 
 def _extract_pattern_requirements(prompt: str) -> list[str]:

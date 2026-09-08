@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { AlertTriangle, Check, CheckCircle2, ChevronRight, CircleDot, FileEdit, FolderKanban, ListTree, PanelsTopLeft, Upload } from "lucide-react"
+import { AlertTriangle, Check, CheckCircle2, ChevronRight, CircleDot, FileEdit, FolderKanban, ListTree, Loader2, PanelsTopLeft, Pause, Upload } from "lucide-react"
 import { getProject, getProjectExperienceSummary, type ProjectExperienceSummary, type ProjectResponse } from "@/lib/api"
 import { ToastProvider } from "@/components/Toast"
 import { cn } from "@/lib/utils"
@@ -10,6 +10,7 @@ import { OutlineStep } from "@/steps/OutlineStep"
 import { ChapterStep } from "@/steps/ChapterStep"
 import { ExportStep } from "@/steps/ExportStep"
 import { JobsProvider, TaskCenter } from "@/components/Jobs"
+import { useJobs } from "@/components/Jobs"
 
 export type StepId = "project" | "upload" | "outline" | "chapter" | "export"
 
@@ -164,6 +165,9 @@ function Studio() {
 }
 
 function ProjectPulse({ project, onNavigate }: { project: ProjectResponse; onNavigate: (step: string) => void }) {
+  const { activeJob, jobs } = useJobs()
+  const pausedJob = jobs.find((job) => job.job_type === "project_generation" && job.status === "paused") ?? null
+  const projectJob = activeJob ?? pausedJob
   const summary = useAsyncData<ProjectExperienceSummary>(
     () => getProjectExperienceSummary(project.project_id),
     [project.project_id],
@@ -193,7 +197,8 @@ function ProjectPulse({ project, onNavigate }: { project: ProjectResponse; onNav
   const action = data.actions[0]
   const needsAttention = progress.needs_attention_chapters ?? 0
   return (
-    <section className="glass-surface mb-5 rounded-[var(--radius)] px-4 py-3" aria-label="项目当前进度">
+    <section className={cn("glass-surface mb-5 rounded-[var(--radius)] px-4 py-3", projectJob && "border-primary/40 ring-2 ring-primary/10")} aria-label="项目当前进度">
+      {projectJob ? <div className={cn("mb-3 flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium", projectJob.status === "paused" ? "border-[var(--color-warning)]/30 bg-[var(--color-warning)]/[0.10] text-[var(--color-warning)]" : "border-primary/20 bg-primary/[0.08] text-primary")}><>{projectJob.status === "paused" ? <Pause className="h-4 w-4" /> : <Loader2 className="h-4 w-4 animate-spin" />}</> {projectJob.status === "paused" ? "项目已暂停：" : "项目正在执行："}{projectJob.message}<span className="ml-auto text-xs font-normal text-muted-foreground">{projectJob.total > 0 ? `${projectJob.current}/${projectJob.total}` : projectJob.status === "paused" ? "可继续" : "处理中"}</span></div> : null}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="flex items-center gap-2 text-sm font-medium text-foreground">

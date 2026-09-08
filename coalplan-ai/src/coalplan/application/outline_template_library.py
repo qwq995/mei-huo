@@ -219,6 +219,83 @@ def load_outline_template(template_id: str, library_dir: str | Path | None = Non
     return OutlineTemplateDocument(**json.loads(path.read_text(encoding="utf-8")))
 
 
+def _safe_template_id(template_id: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", template_id):
+        raise ValueError("template_id 只能包含字母、数字、下划线和短横线")
+    return template_id
+
+
+def _write_outline_template(document: OutlineTemplateDocument, library_dir: str | Path | None = None) -> OutlineTemplateDocument:
+    out = Path(library_dir) if library_dir else default_library_dir()
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "templates").mkdir(exist_ok=True)
+    _safe_template_id(document.template_id)
+    (out / "templates" / f"{document.template_id}.json").write_text(
+        json.dumps(document.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (out / "templates" / f"{document.template_id}.md").write_text(render_outline_template_markdown(document), encoding="utf-8")
+    _rebuild_outline_template_index(out)
+    return document
+
+
+def _rebuild_outline_template_index(out: Path) -> dict[str, Any]:
+    documents = []
+    failures = []
+    for path in sorted((out / "templates").glob("*.json")):
+        try:
+            documents.append(OutlineTemplateDocument(**json.loads(path.read_text(encoding="utf-8"))))
+        except Exception as exc:
+            failures.append({"source_path": str(path), "error": str(exc)})
+    index = {
+        "version": "outline-template-library-v1",
+        "corpus_dir": str(out.resolve()),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "document_count": len(documents), "failed_count": len(failures), "skipped_count": 0,
+        "skipped": [], "templates": [template_summary(item) for item in documents], "failures": failures,
+    }
+    (out / "index.json").write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+    (out / "index.md").write_text(render_library_markdown(index), encoding="utf-8")
+    return index
+
+
+def import_outline_templates(payload: list[dict[str, Any]], library_dir: str | Path | None = None) -> dict[str, Any]:
+    imported = []
+    failures = []
+    for position, item in enumerate(payload):
+        try:
+            document = OutlineTemplateDocument(**item)
+            _safe_template_id(document.template_id)
+            _write_outline_template(document, library_dir)
+            imported.append(document.template_id)
+        except Exception as exc:
+            failures.append({"index": position, "error": str(exc)})
+    return {"imported": imported, "failed": failures, "imported_count": len(imported), "failed_count": len(failures)}
+
+
+def update_outline_template(template_id: str, patch: dict[str, Any], library_dir: str | Path | None = None) -> OutlineTemplateDocument:
+    document = load_outline_template(_safe_template_id(template_id), library_dir)
+    if document is None:
+        raise KeyError(template_id)
+    allowed = {"file_name", "source_path", "project_name", "project_type", "tags", "key_topics", "nodes", "adjustment_log", "guidance_version"}
+    merged = document.model_dump()
+    merged.update({key: value for key, value in patch.items() if key in allowed})
+    merged["template_id"] = template_id
+    return _write_outline_template(OutlineTemplateDocument(**merged), library_dir)
+
+
+def delete_outline_template(template_id: str, library_dir: str | Path | None = None) -> None:
+    out = Path(library_dir) if library_dir else default_library_dir()
+    safe_id = _safe_template_id(template_id)
+    json_path = out / "templates" / f"{safe_id}.json"
+    if not json_path.exists():
+        raise KeyError(template_id)
+    json_path.unlink()
+    md_path = out / "templates" / f"{safe_id}.md"
+    if md_path.exists():
+        md_path.unlink()
+    _rebuild_outline_template_index(out)
+
+
 def recommend_outline_templates(query: OutlineTemplateRecommendationQuery, *, llm: StructuredLLMClient | None = None, library_dir: str | Path | None = None) -> OutlineTemplateRecommendationResponse:
     index = load_outline_template_index(library_dir)
     candidates = _recall_candidates(query, index.get("templates", []))

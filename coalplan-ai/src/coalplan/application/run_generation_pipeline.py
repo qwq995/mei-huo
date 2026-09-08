@@ -11,6 +11,7 @@ from coalplan.application.content_revision_plan import build_content_revision_pl
 from coalplan.application.current_execution_window import build_current_execution_window, render_current_execution_window_markdown
 from coalplan.application.generate_chapter import generate_chapter
 from coalplan.application.generation_cache import CachedLLMClient, dependency_fingerprint
+from coalplan.application.generation_pause import GenerationPauseRequested
 from coalplan.application.generate_project_profile import generate_project_profile
 from coalplan.application.generation_context import (
     chapter_summary_patch,
@@ -1746,6 +1747,8 @@ class GenerationPipeline:
                         current_node_id=node.id,
                     ),
                 )
+                if progress_callback:
+                    progress_callback("paused_guard", 0, 1, "正在确认项目仍处于生成状态")
                 self._update_project_generation_context(
                     project,
                     node,
@@ -1965,6 +1968,8 @@ class GenerationPipeline:
         )
         if progress_callback:
             progress_callback("validation", len(writing_unit_contexts), len(writing_unit_contexts), "正在校验事实边界并保存版本")
+        if progress_callback:
+            progress_callback("paused_guard", 0, 1, "正在确认项目仍处于生成状态")
         self._update_project_generation_context(
             project,
             node,
@@ -2459,6 +2464,8 @@ class GenerationPipeline:
                         "selected_version_id": selected_version_id,
                     }
                 )
+            except GenerationPauseRequested:
+                raise
             except Exception as exc:
                 failed.append(
                     {
@@ -2562,6 +2569,7 @@ class GenerationPipeline:
                 template_tree=base_template_tree,
                 llm=self._structured_llm(),
                 artifacts=self.artifacts,
+                reference_outline=load_outline_template(project.selected_outline_template_id) if project.selected_outline_template_id else None,
             )
             project.template_tree = apply_outline_to_template_tree(base_template_tree, project.outline_plan)
             if self.workspace_store is not None:
