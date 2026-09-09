@@ -225,8 +225,11 @@ class FineGrainedGenerationTest(unittest.TestCase):
             )
 
         self.assertIn(f"# {self.node.title}", draft.markdown)
-        self.assertEqual(1, draft.markdown.count("## 主要来源摘要"))
-        self.assertEqual(1, draft.markdown.count("## 生成正文"))
+        self.assertNotIn("## 主要来源摘要", draft.markdown)
+        self.assertNotIn("## 生成正文", draft.markdown)
+        self.assertNotIn("## 人工补充需补充", draft.markdown)
+        self.assertTrue(draft.generation_metadata["presentation"]["editable_markdown"])
+        self.assertEqual(self.node.manual_fill, draft.generation_metadata["manual_supplement_items"])
         self.assertEqual(len(specs), len(draft.generation_metadata["writing_units"]))
         self.assertEqual("writing_unit", draft.generation_metadata["generation_granularity"])
         self.assertTrue(

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project_type", "sections"],
+  "properties": {
+    "project_type": {"type": "string"},
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path_key", "route", "chapter_module", "reason", "confidence"],
+        "properties": {
+          "path_key": {"type": "string"},
+          "route": {"type": "string", "enum": ["atom_source", "chapter_sample", "project_fact", "exclude"]},
+          "chapter_module": {"type": "string"},
+          "reason": {"type": "string"},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      }
+    }
+  }
+}

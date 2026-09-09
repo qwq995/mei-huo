@@ -1,0 +1,86 @@
+{
+  "schema_version": "v2",
+  "chapter_modules": [
+    "preparation_basis", "project_overview", "construction_conditions", "characteristics_risks",
+    "deployment_organization", "site_layout_temporary_works", "construction_preparation",
+    "schedule_control", "resource_plan", "process_technology", "quality_test_acceptance",
+    "safety_occupational_health", "environmental_water_soil_civilized",
+    "emergency_flood_fire", "survey_monitoring", "completion_records", "calculations_drawings"
+  ],
+  "atom_types": [
+    "process", "control", "inspection", "applicability", "exception",
+    "organization_interface", "resource_configuration", "chapter_pattern"
+  ],
+  "process_stages": [
+    "prerequisite", "preparation", "survey_layout", "material_inspection", "equipment_setup",
+    "process_trial", "main_operation", "parameter_control", "handover", "quality_inspection",
+    "acceptance", "safety_environment", "monitoring_feedback", "exception_handling", "records_deliverables"
+  ],
+  "content_functions": [
+    "applicability", "input_condition", "workflow", "method", "parameter", "resource", "material",
+    "equipment", "quality_control", "inspection", "acceptance", "safety", "environment", "interface",
+    "risk", "exception", "record", "calculation_basis"
+  ],
+  "engineering_systems": [
+    "dam", "underground_tunnel", "diversion_discharge", "slope", "road_bridge", "pipeline",
+    "hydromechanical", "electromechanical", "temporary_works", "renewable_energy", "municipal_works",
+    "coal_fire_area", "water_supply_drainage", "material_processing", "building_structure"
+  ],
+  "process_families": [
+    "survey_monitoring", "diversion_dewatering", "open_excavation", "underground_excavation",
+    "drilling_blasting", "support_reinforcement", "grouting", "concrete", "earth_rock_fill",
+    "road_bridge", "pipeline", "temporary_works", "metal_structure", "mechanical_installation",
+    "electrical_installation", "renewable_installation", "quality_testing", "safety_control",
+    "environmental_control", "emergency_response", "organization_management",
+    "drilling_borehole", "building_fitout", "water_injection_cooling", "fire_area_grouting", "fire_area_cover_sealing", "fire_area_integrated_control", "material_processing"
+  ],
+  "display_labels": {
+    "dam": "坝体工程", "underground_tunnel": "地下洞室与隧洞", "diversion_discharge": "导流泄洪系统",
+    "slope": "边坡工程", "road_bridge": "道路桥梁", "pipeline": "管网管道", "hydromechanical": "水力机械",
+    "electromechanical": "机电系统", "temporary_works": "临时工程", "renewable_energy": "新能源工程",
+    "municipal_works": "市政工程", "survey_monitoring": "测量监测", "diversion_dewatering": "导流排水",
+    "coal_fire_area": "煤田火区治理", "water_supply_drainage": "施工供排水系统",
+    "material_processing": "砂石骨料与材料加工", "building_structure": "房屋建筑与结构工程",
+    "open_excavation": "明挖与土石方开挖", "underground_excavation": "地下洞室开挖",
+    "drilling_blasting": "钻孔爆破", "support_reinforcement": "支护加固", "grouting": "钻孔灌浆",
+    "concrete": "混凝土施工", "earth_rock_fill": "土石方填筑", "metal_structure": "金属结构",
+    "mechanical_installation": "机械安装", "electrical_installation": "电气安装与调试",
+    "renewable_installation": "风光设备安装", "quality_testing": "质量试验与验收",
+    "safety_control": "施工安全控制", "environmental_control": "环保水保与文明施工",
+    "emergency_response": "应急处置", "organization_management": "施工组织与接口管理",
+    "drilling_borehole": "一般钻孔与成孔", "building_fitout": "建筑装饰装修", "water_injection_cooling": "火区注水降温", "fire_area_grouting": "火区钻孔注浆",
+    "fire_area_cover_sealing": "火区覆盖封堵", "fire_area_integrated_control": "火区综合治理", "material_processing": "材料加工与生产"
+  },
+  "aliases": {
+    "engineering_systems": {
+      "隧道": "underground_tunnel", "隧洞": "underground_tunnel", "地下洞室": "underground_tunnel",
+      "坝体": "dam", "大坝": "dam", "边坡": "slope", "道路": "road_bridge", "桥梁": "road_bridge",
+      "管网": "pipeline", "管道": "pipeline", "临时工程": "temporary_works",
+      "煤田火区": "coal_fire_area", "煤火治理": "coal_fire_area", "施工供排水": "water_supply_drainage",
+      "砂石系统": "material_processing", "拌和系统": "material_processing", "房屋建筑": "building_structure"
+    },
+    "process_families": {
+      "钻孔爆破": "drilling_blasting", "隧道钻爆施工": "drilling_blasting", "钻爆循环": "drilling_blasting", "钻爆参数设计": "drilling_blasting",
+      "爆破网路控制": "drilling_blasting", "爆破材料选用": "drilling_blasting", "光面爆破参数设计": "drilling_blasting",
+      "爆破装药参数设计": "drilling_blasting", "钻爆孔位设计": "drilling_blasting", "隧道爆破施工": "drilling_blasting",
+      "地下洞室开挖": "underground_excavation", "洞挖": "underground_excavation", "土石方明挖": "open_excavation",
+      "支护": "support_reinforcement", "锚喷支护": "support_reinforcement", "灌浆": "grouting",
+      "混凝土浇筑": "concrete", "混凝土施工": "concrete", "填筑碾压": "earth_rock_fill",
+      "导流围堰排水": "diversion_dewatering", "金属结构安装": "metal_structure", "管网管道": "pipeline",
+      "一般钻孔": "drilling_borehole", "机械钻孔": "drilling_borehole", "钻进成孔": "drilling_borehole",
+      "building_structure": "building_fitout", "建筑装饰": "building_fitout", "装饰装修": "building_fitout", "门窗安装": "building_fitout",
+      "注水降温": "water_injection_cooling", "地表注水": "water_injection_cooling", "钻孔注水": "water_injection_cooling",
+      "火区注浆": "fire_area_grouting", "黄泥注浆": "fire_area_grouting", "覆盖封堵": "fire_area_cover_sealing",
+      "综合灭火": "fire_area_integrated_control", "火区综合治理": "fire_area_integrated_control", "分区灭火": "fire_area_integrated_control",
+      "砂石骨料加工": "material_processing", "混凝土拌和生产": "material_processing"
+    }
+  },
+  "parameter_roles": [
+    "project_specific", "design_required", "test_determined", "normative_limit",
+    "equipment_specific", "historical_example", "normative_reference", "project_entity"
+  ],
+  "reuse_policies": [
+    "replace_from_evidence", "ask_user", "determine_by_test", "keep_normative_with_version_check",
+    "retain_only_same_project", "qualitative_only"
+  ]
+}

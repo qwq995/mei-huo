@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import re
-
 from fastapi import APIRouter, HTTPException, Request
 
+from coalplan.application.chapter_presentation import editable_chapter_markdown
 from coalplan.interfaces.api.execution_window_guard import ensure_generation_window
 
 from .schemas import (
@@ -22,33 +21,7 @@ router = APIRouter(tags=["generation"])
 
 
 def _public_chapter_markdown(markdown: str) -> str:
-    """Expose only deliverable body text; stored versions retain audit/source blocks."""
-    lines = (markdown or "").splitlines()
-    try:
-        start = next(index for index, line in enumerate(lines) if re.match(r"^##\s+生成正文\s*$", line.strip()))
-        lines = lines[start + 1:]
-        end = next((index for index, line in enumerate(lines) if re.match(r"^##\s+", line.strip())), len(lines))
-        lines = lines[:end]
-    except StopIteration:
-        pass
-    cleaned: list[str] = []
-    for line in lines:
-        # Trace ids can be inline in an otherwise valid paragraph. Remove only
-        # the trace annotation, never the whole paragraph.
-        line = re.sub(
-            r"\s*(?:[（(][^()（）]*\b(?:evidence_id|section_id|atom_id|fact_id)\s*[:=][^()（）]*[）)]|"
-            r"\[[^\[\]]*\b(?:evidence_id|section_id|atom_id|fact_id)\s*[:=][^\[\]]*\])",
-            "",
-            line,
-            flags=re.I,
-        )
-        line = re.sub(r"\b(?:evidence_id|section_id|atom_id|fact_id)\s*[:=]\s*[^\s，。；;，,]+", "", line, flags=re.I)
-        line = re.sub(r"【需人工补充：[^】]+】", "", line).rstrip()
-        if re.match(r"^\s*[-*]\s*[。；;，,：:]?\s*$", line):
-            continue
-        if line.strip():
-            cleaned.append(line)
-    return "\n".join(cleaned).strip()
+    return editable_chapter_markdown(markdown).strip()
 
 
 @router.post("/projects/{project_id}/generate", response_model=GenerateResponse)

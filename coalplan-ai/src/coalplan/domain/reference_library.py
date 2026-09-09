@@ -30,10 +30,14 @@ class KnowledgeRole(str, Enum):
 
 class ReferenceReviewStatus(str, Enum):
     imported = "imported"
+    parsed = "parsed"
     ai_candidate = "ai_candidate"
     reviewed = "reviewed"
+    pending_publish = "pending_publish"
     published = "published"
     rejected = "rejected"
+    superseded = "superseded"
+    invalid = "invalid"
 
 
 class ReferenceDocumentEntry(BaseModel):
@@ -112,6 +116,26 @@ class ReferenceFactVariable(BaseModel):
     migration_policy: str = "不得直接迁移；仅在当前项目证据支持时使用"
 
 
+class AtomParameterSlot(BaseModel):
+    slot_key: str
+    display_name: str
+    source_value: str
+    normalized_value: str = ""
+    unit: str = ""
+    data_type: str = "text"
+    semantic_role: str = "project_specific"
+    reuse_policy: str = "replace_from_evidence"
+    required: bool = False
+    source_start: int | None = None
+    source_end: int | None = None
+
+
+class AtomRelation(BaseModel):
+    relation_type: str
+    target_atom_id: str
+    reason: str = ""
+
+
 class ReferenceAtom(BaseModel):
     id: str
     document_id: str
@@ -119,6 +143,11 @@ class ReferenceAtom(BaseModel):
     project_type: str
     title_path: list[str] = Field(default_factory=list)
     content: str
+    schema_version: str = "v1"
+    atom_type: str = "technical_excerpt"
+    raw_excerpt: str = ""
+    normalized_text: str = ""
+    parameterized_template: str = ""
     source_block_ids: list[str] = Field(default_factory=list)
     start_line: int
     end_line: int
@@ -128,10 +157,23 @@ class ReferenceAtom(BaseModel):
     process: str = ""
     process_stage: str = ""
     chapter_type: str = ""
+    chapter_module: str = ""
+    engineering_system: str = ""
+    process_family: str = ""
+    process_method: str = ""
     content_functions: list[str] = Field(default_factory=list)
+    action_sequence: list[str] = Field(default_factory=list)
+    control_points: list[str] = Field(default_factory=list)
+    acceptance_checks: list[str] = Field(default_factory=list)
+    exceptions: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
     applicability: list[str] = Field(default_factory=list)
     prohibited_scenarios: list[str] = Field(default_factory=list)
     fact_variables: list[ReferenceFactVariable] = Field(default_factory=list)
+    parameter_slots: list[AtomParameterSlot] = Field(default_factory=list)
+    relations: list[AtomRelation] = Field(default_factory=list)
+    parameter_coverage: float = 0.0
+    publication_blockers: list[str] = Field(default_factory=list)
     quality_score: float = 0.0
     confidence: float = 0.0
     reference_value: str = "high"
@@ -150,6 +192,13 @@ class AtomRetrievalQuery(BaseModel):
     parent_titles: list[str] = Field(default_factory=list)
     evidence_summary: str = ""
     writing_topics: list[str] = Field(default_factory=list)
+    chapter_module: str = ""
+    engineering_system: str = ""
+    engineering_object: str = ""
+    process_family: str = ""
+    process_stage: str = ""
+    content_functions: list[str] = Field(default_factory=list)
+    applicability: list[str] = Field(default_factory=list)
     top_k: int = 5
     excluded_project_names: list[str] = Field(default_factory=list)
 

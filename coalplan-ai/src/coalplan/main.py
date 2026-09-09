@@ -10,6 +10,7 @@ from fastapi.responses import RedirectResponse
 from coalplan.application.run_generation_pipeline import GenerationPipeline
 from coalplan.application.generation_jobs import GenerationJobManager
 from coalplan.application.workspace_store import WorkspaceStore
+from coalplan.domain.reference_library import ReferenceReviewStatus
 from coalplan.infrastructure.database.repository import DatabaseProjectRepository
 from coalplan.infrastructure.database.reference_repository import ReferenceLibraryRepository
 from coalplan.infrastructure.database.standard_repository import StandardConstraintRepository
@@ -47,6 +48,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.pipeline = build_pipeline(settings)
     app.state.workspace_store = app.state.pipeline.workspace_store
     app.state.reference_library = app.state.pipeline.reference_library
+    app.state.reference_vector_index = app.state.pipeline.reference_vector_index
     app.state.standard_constraints = StandardConstraintRepository(app.state.workspace_store.session_factory)
     app.state.job_manager = GenerationJobManager(
         app.state.workspace_store.session_factory,
@@ -89,6 +91,7 @@ def build_pipeline(settings: Settings) -> GenerationPipeline:
     reference_library = ReferenceLibraryRepository(session_factory)
     llm = _build_llm(settings.llm_provider, settings)
     structured_llm = _build_llm(settings.structured_llm_provider, settings) if settings.structured_llm_provider else None
+    reference_vector_index = _build_reference_vector_index(settings, reference_library, storage_root)
     return GenerationPipeline(
         projects=DatabaseProjectRepository(session_factory),
         artifacts=artifacts,
@@ -99,7 +102,27 @@ def build_pipeline(settings: Settings) -> GenerationPipeline:
         structured_llm=structured_llm,
         workspace_store=workspace_store,
         reference_library=reference_library,
+        reference_vector_index=reference_vector_index,
     )
+
+
+def _build_reference_vector_index(settings: Settings, reference_library, storage_root: Path):
+    if not settings.reference_vector_enabled:
+        return None
+    from coalplan.infrastructure.vector.qdrant_atom_index import QdrantAtomVectorIndex, SentenceTransformerEmbedder
+
+    embedder = SentenceTransformerEmbedder(settings.reference_vector_model)
+    vector_path = settings.reference_vector_path
+    if not vector_path.is_absolute():
+        vector_path = storage_root / vector_path
+    index = QdrantAtomVectorIndex(
+        embed=embedder,
+        dimension=embedder.dimension,
+        url=settings.reference_vector_url,
+        path=vector_path,
+    )
+    index.upsert(reference_library.list_atoms(status=ReferenceReviewStatus.published))
+    return index
 
 
 def _build_llm(provider: str | None, settings: Settings):

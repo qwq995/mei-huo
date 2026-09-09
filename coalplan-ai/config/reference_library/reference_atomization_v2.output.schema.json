@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["atoms", "excluded_segments"],
+  "properties": {
+    "atoms": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "segment_ids", "source_quotes", "atom_type", "chapter_module", "engineering_system", "engineering_object",
+          "specialty", "work_item", "process_family", "process_method", "process_stage", "content_functions",
+          "applicability", "prohibited_scenarios", "action_sequence", "control_points", "acceptance_checks",
+          "exceptions", "risks", "parameter_slots", "quality_score", "confidence", "value_reason"
+        ],
+        "properties": {
+          "segment_ids": {"type": "array", "items": {"type": "string"}},
+          "source_quotes": {"type": "array", "items": {"type": "string"}},
+          "atom_type": {"type": "string"},
+          "chapter_module": {"type": "string"},
+          "engineering_system": {"type": "string"},
+          "engineering_object": {"type": "string"},
+          "specialty": {"type": "string"},
+          "work_item": {"type": "string"},
+          "process_family": {"type": "string"},
+          "process_method": {"type": "string"},
+          "process_stage": {"type": "string"},
+          "content_functions": {"type": "array", "items": {"type": "string"}},
+          "applicability": {"type": "array", "items": {"type": "string"}},
+          "prohibited_scenarios": {"type": "array", "items": {"type": "string"}},
+          "action_sequence": {"type": "array", "items": {"type": "string"}},
+          "control_points": {"type": "array", "items": {"type": "string"}},
+          "acceptance_checks": {"type": "array", "items": {"type": "string"}},
+          "exceptions": {"type": "array", "items": {"type": "string"}},
+          "risks": {"type": "array", "items": {"type": "string"}},
+          "parameter_slots": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["slot_key", "display_name", "source_value", "unit", "data_type", "semantic_role", "reuse_policy", "required"],
+              "properties": {
+                "slot_key": {"type": "string"},
+                "display_name": {"type": "string"},
+                "source_value": {"type": "string"},
+                "unit": {"type": "string"},
+                "data_type": {"type": "string"},
+                "semantic_role": {"type": "string"},
+                "reuse_policy": {"type": "string"},
+                "required": {"type": "boolean"}
+              }
+            }
+          },
+          "quality_score": {"type": "number"},
+          "confidence": {"type": "number"},
+          "value_reason": {"type": "string"}
+        }
+      }
+    },
+    "excluded_segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["segment_id", "category", "reason"],
+        "properties": {
+          "segment_id": {"type": "string"},
+          "category": {"type": "string"},
+          "reason": {"type": "string"}
+        }
+      }
+    }
+  }
+}

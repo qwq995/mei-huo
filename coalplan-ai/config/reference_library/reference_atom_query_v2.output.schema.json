@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "chapter_module", "engineering_system", "engineering_object", "process_family",
+    "process_stage", "content_functions", "applicability", "confidence", "reason"
+  ],
+  "properties": {
+    "chapter_module": {"type": "string"},
+    "engineering_system": {"type": "string"},
+    "engineering_object": {"type": "string"},
+    "process_family": {"type": "string"},
+    "process_stage": {"type": "string"},
+    "content_functions": {"type": "array", "items": {"type": "string"}},
+    "applicability": {"type": "array", "items": {"type": "string"}},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "reason": {"type": "string"}
+  }
+}

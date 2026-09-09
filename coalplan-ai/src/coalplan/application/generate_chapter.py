@@ -18,6 +18,7 @@ from coalplan.ports.repository import ArtifactRepository
 
 from .chapter_writing_guidance import guidance_for_node, render_writing_guidance
 from .chapter_generation_plan import render_chapter_plan_for_prompt
+from .chapter_presentation import editable_chapter_markdown
 from .chapter_writing_skill import ChapterWritingSkill, render_chapter_writing_skill
 from .chapter_skill_library import render_chapter_skills_for_prompt
 from .chapter_writing_units import ChapterWritingUnitContext, compact_completed_unit
@@ -254,6 +255,12 @@ def generate_chapter(
     else:
         task.status = TaskStatus.failed
         task.error_message = "; ".join(issue.message for issue in draft.validation_issues)
+    draft.generation_metadata["manual_supplement_items"] = list(node.manual_fill)
+    draft.generation_metadata["presentation"] = {
+        "editable_markdown": True,
+        "trace_sections_stored_separately": True,
+    }
+    draft.markdown = editable_chapter_markdown(draft.markdown, expected_title=node.title)
     draft.artifact_path = artifacts.write_text(project_id, f"chapters/{node.id}.md", draft.markdown)
     artifacts.write_text(project_id, f"chapters/{node.id}.generation_metadata.json", to_json_text(draft.generation_metadata))
     task.draft_id = draft.id

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-from sqlalchemy import text
+from sqlalchemy import func, or_, text
 
 from coalplan.application.serialization import dump_model
 from coalplan.domain.reference_library import (
     ChapterAtomUsage,
+    AtomRetrievalQuery,
     ReferenceAtom,
     ReferenceChapter,
     ReferenceDocument,
@@ -25,7 +26,12 @@ class ReferenceLibraryRepository:
     def __init__(self, session_factory) -> None:
         self.session_factory = session_factory
 
-    def save_document(self, document: ReferenceDocument) -> ReferenceDocument:
+    def save_document(
+        self,
+        document: ReferenceDocument,
+        *,
+        refresh_search_indexes: bool = True,
+    ) -> ReferenceDocument:
         with self.session_factory() as session:
             record = session.get(ReferenceDocumentRecord, document.id)
             values = dump_model(document)
@@ -36,7 +42,8 @@ class ReferenceLibraryRepository:
                 for key, value in values.items():
                     setattr(record, key, value)
             session.commit()
-        self._refresh_search_indexes()
+        if refresh_search_indexes:
+            self._refresh_search_indexes()
         return document
 
     def get_document(self, document_id: str) -> ReferenceDocument:
@@ -70,6 +77,7 @@ class ReferenceLibraryRepository:
         *,
         chapters: list[ReferenceChapter],
         atoms: list[ReferenceAtom],
+        refresh_search_indexes: bool = True,
     ) -> None:
         with self.session_factory() as session:
             session.query(ReferenceChapterRecord).filter_by(document_id=document_id).delete()
@@ -89,6 +97,10 @@ class ReferenceLibraryRepository:
             for atom in unique_atoms.values():
                 session.add(_atom_record(atom))
             session.commit()
+        if refresh_search_indexes:
+            self._refresh_search_indexes()
+
+    def refresh_search_indexes(self) -> None:
         self._refresh_search_indexes()
 
     def list_atoms(
@@ -105,6 +117,97 @@ class ReferenceLibraryRepository:
                 query = query.filter(~ReferenceAtomRecord.project_name.in_(excluded_projects))
             return [_atom(record) for record in query.order_by(ReferenceAtomRecord.id).all()]
 
+    def get_atoms(self, atom_ids: list[str]) -> list[ReferenceAtom]:
+        """Load only requested atoms while preserving caller order."""
+        unique_ids = list(dict.fromkeys(atom_ids))
+        if not unique_ids:
+            return []
+        with self.session_factory() as session:
+            records = session.query(ReferenceAtomRecord).filter(ReferenceAtomRecord.id.in_(unique_ids)).all()
+            by_id = {record.id: _atom(record) for record in records}
+        return [by_id[atom_id] for atom_id in unique_ids if atom_id in by_id]
+
+    def list_document_atom_ids(self, document_id: str) -> list[str]:
+        with self.session_factory() as session:
+            return [
+                row[0] for row in session.query(ReferenceAtomRecord.id)
+                .filter(ReferenceAtomRecord.document_id == document_id).all()
+            ]
+
+    def list_v2_retrieval_candidates(
+        self,
+        query: AtomRetrievalQuery,
+        *,
+        limit: int = 200,
+    ) -> list[ReferenceAtom]:
+        """Use indexed status/project fields and JSON tags before materializing atoms."""
+        limit = max(1, min(limit, 1000))
+        with self.session_factory() as session:
+            records = session.query(ReferenceAtomRecord).filter(
+                ReferenceAtomRecord.status == ReferenceReviewStatus.published.value,
+                func.json_extract(ReferenceAtomRecord.tags_json, "$.schema_version") == "v2",
+                ReferenceAtomRecord.project_name != query.project_name,
+            )
+            if query.excluded_project_names:
+                records = records.filter(~ReferenceAtomRecord.project_name.in_(query.excluded_project_names))
+            for field, value in (
+                ("chapter_module", query.chapter_module),
+                ("engineering_system", query.engineering_system),
+                ("process_family", query.process_family),
+            ):
+                if value:
+                    extracted = func.json_extract(ReferenceAtomRecord.tags_json, f"$.{field}")
+                    records = records.filter(or_(extracted == value, extracted == "", extracted.is_(None)))
+            rows = records.order_by(
+                ReferenceAtomRecord.quality_score.desc(),
+                ReferenceAtomRecord.confidence.desc(),
+                ReferenceAtomRecord.id,
+            ).limit(limit).all()
+            return [_atom(record) for record in rows]
+
+    def search_atoms_page(
+        self,
+        *,
+        query: str = "",
+        status: ReferenceReviewStatus | None = None,
+        document_id: str = "",
+        chapter_module: str = "",
+        engineering_system: str = "",
+        process_family: str = "",
+        page: int = 1,
+        page_size: int = 30,
+    ) -> tuple[list[ReferenceAtom], int]:
+        """Database-paged management search without loading the whole library."""
+        page = max(1, page)
+        page_size = max(1, min(page_size, 100))
+        with self.session_factory() as session:
+            records = session.query(ReferenceAtomRecord)
+            if status is not None:
+                records = records.filter(ReferenceAtomRecord.status == status.value)
+            if document_id:
+                records = records.filter(ReferenceAtomRecord.document_id == document_id)
+            for field, value in (
+                ("chapter_module", chapter_module),
+                ("engineering_system", engineering_system),
+                ("process_family", process_family),
+            ):
+                if value:
+                    records = records.filter(func.json_extract(ReferenceAtomRecord.tags_json, f"$.{field}") == value)
+            needle = query.strip()
+            if needle:
+                pattern = f"%{needle}%"
+                records = records.filter(or_(
+                    ReferenceAtomRecord.content.ilike(pattern),
+                    ReferenceAtomRecord.project_name.ilike(pattern),
+                    ReferenceAtomRecord.project_type.ilike(pattern),
+                    ReferenceAtomRecord.tags_json.ilike(pattern),
+                ))
+            total = records.count()
+            rows = records.order_by(
+                ReferenceAtomRecord.quality_score.desc(), ReferenceAtomRecord.id,
+            ).offset((page - 1) * page_size).limit(page_size).all()
+            return [_atom(record) for record in rows], total
+
     def set_atom_status(self, atom_id: str, status: ReferenceReviewStatus) -> ReferenceAtom:
         with self.session_factory() as session:
             record = session.get(ReferenceAtomRecord, atom_id)
@@ -113,6 +216,22 @@ class ReferenceLibraryRepository:
             record.status = status.value
             session.commit()
             return _atom(record)
+
+    def set_atom_statuses(
+        self,
+        atom_ids: list[str],
+        status: ReferenceReviewStatus,
+    ) -> list[ReferenceAtom]:
+        unique_ids = list(dict.fromkeys(atom_ids))
+        if not unique_ids:
+            return []
+        with self.session_factory() as session:
+            records = session.query(ReferenceAtomRecord).filter(ReferenceAtomRecord.id.in_(unique_ids)).all()
+            by_id = {record.id: record for record in records}
+            for record in records:
+                record.status = status.value
+            session.commit()
+            return [_atom(by_id[atom_id]) for atom_id in unique_ids if atom_id in by_id]
 
     def get_atom(self, atom_id: str) -> ReferenceAtom:
         with self.session_factory() as session:
@@ -191,13 +310,31 @@ def _document(record: ReferenceDocumentRecord) -> ReferenceDocument:
 
 def _atom_record(atom: ReferenceAtom) -> ReferenceAtomRecord:
     tags = {
+        "schema_version": atom.schema_version,
+        "atom_type": atom.atom_type,
+        "raw_excerpt": atom.raw_excerpt,
+        "normalized_text": atom.normalized_text,
+        "parameterized_template": atom.parameterized_template,
         "engineering_object": atom.engineering_object,
+        "engineering_system": atom.engineering_system,
         "specialty": atom.specialty,
         "work_item": atom.work_item,
         "process": atom.process,
+        "process_family": atom.process_family,
+        "process_method": atom.process_method,
         "process_stage": atom.process_stage,
         "chapter_type": atom.chapter_type,
+        "chapter_module": atom.chapter_module,
         "content_functions": atom.content_functions,
+        "action_sequence": atom.action_sequence,
+        "control_points": atom.control_points,
+        "acceptance_checks": atom.acceptance_checks,
+        "exceptions": atom.exceptions,
+        "risks": atom.risks,
+        "parameter_slots": [dump_model(item) for item in atom.parameter_slots],
+        "relations": [dump_model(item) for item in atom.relations],
+        "parameter_coverage": atom.parameter_coverage,
+        "publication_blockers": atom.publication_blockers,
         "reference_value": atom.reference_value,
         "value_reason": atom.value_reason,
         "reuse_scope": atom.reuse_scope,
@@ -234,16 +371,34 @@ def _atom(record: ReferenceAtomRecord) -> ReferenceAtom:
         project_type=record.project_type,
         title_path=json.loads(record.title_path_json),
         content=record.content,
+        schema_version=tags.get("schema_version", "v1"),
+        atom_type=tags.get("atom_type", "technical_excerpt"),
+        raw_excerpt=tags.get("raw_excerpt", ""),
+        normalized_text=tags.get("normalized_text", ""),
+        parameterized_template=tags.get("parameterized_template", ""),
         source_block_ids=json.loads(record.source_block_ids_json),
         start_line=record.start_line,
         end_line=record.end_line,
         engineering_object=tags.get("engineering_object", ""),
+        engineering_system=tags.get("engineering_system", ""),
         specialty=tags.get("specialty", ""),
         work_item=tags.get("work_item", ""),
         process=tags.get("process", ""),
+        process_family=tags.get("process_family", ""),
+        process_method=tags.get("process_method", ""),
         process_stage=tags.get("process_stage", ""),
         chapter_type=tags.get("chapter_type", ""),
+        chapter_module=tags.get("chapter_module", ""),
         content_functions=tags.get("content_functions", []),
+        action_sequence=tags.get("action_sequence", []),
+        control_points=tags.get("control_points", []),
+        acceptance_checks=tags.get("acceptance_checks", []),
+        exceptions=tags.get("exceptions", []),
+        risks=tags.get("risks", []),
+        parameter_slots=tags.get("parameter_slots", []),
+        relations=tags.get("relations", []),
+        parameter_coverage=tags.get("parameter_coverage", 0.0),
+        publication_blockers=tags.get("publication_blockers", []),
         reference_value=tags.get("reference_value", "high"),
         value_reason=tags.get("value_reason", ""),
         reuse_scope=tags.get("reuse_scope", []),

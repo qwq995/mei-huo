@@ -24,6 +24,14 @@ src/coalplan/
   assets/             Built-in templates, samples, and reusable generation pattern assets.
 ```
 
+Reference-library assets are grouped separately:
+
+```text
+config/reference_library/   Controlled taxonomy and structured-output schemas.
+scripts/reference_library/  Corpus validation and delivery-package utilities.
+docs/reference-library/     Architecture, operation, and delivery notes.
+```
+
 ### Backend Responsibilities
 
 - `domain/`: persisted business objects such as projects, outline nodes, chapter versions, jobs, references, and audits. No HTTP or provider-specific code belongs here.

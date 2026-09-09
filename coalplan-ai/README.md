@@ -31,6 +31,8 @@ API 文档默认在 `http://127.0.0.1:8010/docs`。
 - `docs/api-workbench.md`
 - `docs/v0.1-runbook.md`
 - `docs/run-with-deepseek.md`
+- `docs/reference-library/v2.md` - V2 reference-atom corpus, publication gate, and hybrid retrieval.
+- `docs/reference-library/delivery-package.md` - code/data boundary and reproducible data-package build.
 
 ## Run Web
 

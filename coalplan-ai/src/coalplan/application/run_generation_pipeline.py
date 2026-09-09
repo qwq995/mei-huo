@@ -65,6 +65,8 @@ from coalplan.application.quality_iteration_learning import (
     render_quality_iteration_learning_report,
 )
 from coalplan.application.reference_atom_retrieval import prefilter_reference_atoms, retrieve_reference_atoms
+from coalplan.application.hybrid_atom_retrieval import build_query_text, hybrid_prefilter_atoms, query_filters
+from coalplan.application.reference_atom_query import classify_atom_retrieval_query
 from coalplan.application.chapter_writing_guidance import guidance_for_node
 from coalplan.application.chapter_skill_library import render_chapter_skills_for_prompt
 from coalplan.application.chapter_writing_skill import (
@@ -264,6 +266,7 @@ class GenerationPipeline:
         structured_llm: StructuredLLMClient | None = None,
         workspace_store=None,
         reference_library=None,
+        reference_vector_index=None,
     ) -> None:
         self.projects = projects
         self.artifacts = artifacts
@@ -274,6 +277,7 @@ class GenerationPipeline:
         self.structured_llm = structured_llm
         self.workspace_store = workspace_store
         self.reference_library = reference_library
+        self.reference_vector_index = reference_vector_index
         self._drafts: dict[str, list[ChapterDraft]] = {}
 
     def create_project(
@@ -3365,9 +3369,6 @@ class GenerationPipeline:
     ) -> list[AtomRetrievalResult]:
         if self.reference_library is None:
             return []
-        atoms = self.reference_library.list_atoms()
-        if not atoms:
-            return []
         profile = project.project_profile
         evidence_summary = "\n".join(
             f"{' > '.join(section.title_path)}：{section.content[:900]}" for section in selected_sections[:6]
@@ -3395,7 +3396,56 @@ class GenerationPipeline:
             top_k=3 if writing_unit else 5,
         )
         try:
-            candidates = retrieve_reference_atoms(atoms=atoms, query=query, llm=self._structured_llm())
+            classified = classify_atom_retrieval_query(query, llm=self._structured_llm())
+            query = classified.query
+            vector_results = []
+            if self.reference_vector_index is not None:
+                vector_results = self.reference_vector_index.search(
+                    build_query_text(query),
+                    limit=max(12, query.top_k * 4),
+                    filters=query_filters(query),
+                )
+            pinned_ids = list(preferences["atom_ids"])
+            if hasattr(self.reference_library, "list_v2_retrieval_candidates"):
+                atoms = self.reference_library.list_v2_retrieval_candidates(
+                    query, limit=max(100, query.top_k * 20),
+                )
+                loaded_ids = {atom.id for atom in atoms}
+                extra_ids = [
+                    atom_id for atom_id in [*[item[0] for item in vector_results], *pinned_ids]
+                    if atom_id not in loaded_ids
+                ]
+                if extra_ids and hasattr(self.reference_library, "get_atoms"):
+                    atoms.extend(self.reference_library.get_atoms(extra_ids))
+                if not atoms:
+                    atoms = self.reference_library.list_atoms()
+            else:
+                atoms = self.reference_library.list_atoms()
+            if not atoms:
+                return []
+            v2_atoms = [
+                atom for atom in atoms
+                if atom.schema_version == "v2" and atom.status.value == "published" and not atom.publication_blockers
+            ]
+            if v2_atoms:
+                hybrid = hybrid_prefilter_atoms(
+                    v2_atoms,
+                    query,
+                    vector_results=vector_results,
+                    limit=max(12, query.top_k * 4),
+                )
+                candidates = [
+                    AtomRetrievalResult(
+                        atom_id=item.atom.id,
+                        score=min(1.0, item.score),
+                        match_reason="；".join(item.match_reasons),
+                        prompt_use="借鉴参数化工艺组织、控制点和检查闭环，不迁移历史项目参数",
+                        atom=item.atom,
+                    )
+                    for item in hybrid[: query.top_k]
+                ]
+            else:
+                candidates = retrieve_reference_atoms(atoms=atoms, query=query, llm=self._structured_llm())
             by_id = {atom.id: atom for atom in atoms}
             pinned = [
                 AtomRetrievalResult(atom_id=atom_id, score=1.0, match_reason="用户在本章依据页窗中固定选择", prompt_use="优先借鉴工艺组织和控制闭环", atom=by_id[atom_id])

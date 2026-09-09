@@ -106,22 +106,32 @@ def retrieve_reference_atoms(
 def render_reference_atoms_for_prompt(results: list[AtomRetrievalResult]) -> str:
     if not results:
         return "无匹配参考原子。"
-    blocks = [
-        (
+    blocks = []
+    for result in results:
+        atom = result.atom
+        if atom.schema_version == "v2":
+            parameter_lines = "；".join(
+                f"{slot.slot_key}={{{{{slot.slot_key}}}}}（{slot.display_name or '待替换参数'}；{slot.reuse_policy}）"
+                for slot in atom.parameter_slots
+            ) or "无显式参数"
+            prompt_text = atom.parameterized_template or atom.normalized_text or atom.content
+        else:
+            parameter_lines = "；".join(variable.value for variable in atom.fact_variables) or "无显式变量"
+            prompt_text = atom.content
+        blocks.append(
+            (
             f"### atom_id: {result.atom_id}\n"
-            f"- 来源项目：{result.atom.project_name}（仅为异项目参考）\n"
-            f"- 来源标题：{' > '.join(result.atom.title_path)}\n"
+            f"- 来源项目：{atom.project_name}（仅为异项目参考）\n"
+            f"- 来源标题：{' > '.join(atom.title_path)}\n"
             f"- 匹配理由：{result.match_reason}\n"
             f"- 允许借鉴：{result.prompt_use}\n"
-            f"- 事实变量（禁止直接迁移）："
-            f"{'；'.join(variable.value for variable in result.atom.fact_variables) or '无显式变量'}\n"
-            f"- 适用条件：{'；'.join(result.atom.applicability) or '未标注'}\n"
+            f"- 参数槽（必须由当前项目证据替换）：{parameter_lines}\n"
+            f"- 适用条件：{'；'.join(atom.applicability) or '未标注'}\n"
             "```text\n"
-            f"{result.atom.content}\n"
+            f"{prompt_text}\n"
             "```"
+            )
         )
-        for result in results
-    ]
     return "\n\n".join(blocks)
 
 
@@ -134,7 +144,8 @@ def audit_reference_atom_leakage(
     issues: list[AtomLeakageIssue] = []
     for result in results:
         values = {variable.value for variable in result.atom.fact_variables if variable.value.strip()}
-        values.update(_specific_tokens(result.atom.content))
+        values.update(slot.source_value for slot in result.atom.parameter_slots if slot.source_value.strip())
+        values.update(_specific_tokens(result.atom.raw_excerpt or result.atom.content))
         for value in sorted(values, key=len, reverse=True):
             if value in generated_markdown and value not in trusted_project_text:
                 issues.append(

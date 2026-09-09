@@ -24,6 +24,13 @@ def _load_local_env() -> None:
 _load_local_env()
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class Settings(BaseModel):
     storage_dir: Path = Path(os.getenv("COALPLAN_STORAGE_DIR", ".coalplan-data"))
     database_url: str | None = os.getenv("COALPLAN_DATABASE_URL")
@@ -40,6 +47,10 @@ class Settings(BaseModel):
     deepseek_base_url: str = os.getenv("COALPLAN_DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     deepseek_api_key: str = os.getenv("COALPLAN_DEEPSEEK_API_KEY", os.getenv("COALPLAN_OPENAI_API_KEY", ""))
     deepseek_model: str = os.getenv("COALPLAN_DEEPSEEK_MODEL", "deepseek-v4-pro")
+    reference_vector_enabled: bool = _env_bool("COALPLAN_REFERENCE_VECTOR_ENABLED")
+    reference_vector_model: str = os.getenv("COALPLAN_REFERENCE_VECTOR_MODEL", "BAAI/bge-small-zh-v1.5")
+    reference_vector_path: Path = Path(os.getenv("COALPLAN_REFERENCE_VECTOR_PATH", "reference-vectors"))
+    reference_vector_url: str | None = os.getenv("COALPLAN_REFERENCE_VECTOR_URL")
 
 
 def get_settings() -> Settings:
