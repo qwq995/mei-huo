@@ -299,9 +299,9 @@ class GenerationPipeline:
         project = load_template_tree(project, template_id=template_id, loader=self.templates)
         return self.projects.save(project)
 
-    def ingest_bid_markdown(self, project_id: str, *, file_name: str, content: str) -> Project:
+    def ingest_bid_markdown(self, project_id: str, *, file_name: str, content: str, append: bool = False) -> Project:
         project = self.projects.get(project_id)
-        project = ingest_bid_markdown(project, file_name=file_name, content=content, parser=self.parser, artifacts=self.artifacts)
+        project = ingest_bid_markdown(project, file_name=file_name, content=content, parser=self.parser, artifacts=self.artifacts, append=append)
         return self.projects.save(project)
 
     def set_template(self, project_id: str, template_id: str) -> Project:
@@ -1660,12 +1660,31 @@ class GenerationPipeline:
                 continue
             tasks_to_process.append(task)
         total_tasks = len(tasks_to_process)
+        from coalplan.application.outline_planning import ordered_generation_ids, assert_planning_generation_ready
+        ordered_ids = ordered_generation_ids(self, project_id, [task.node_id for task in tasks_to_process])
+        tasks_by_id = {task.node_id: task for task in tasks_to_process}
+        tasks_to_process = [tasks_by_id[nid] for nid in ordered_ids]
+        total_tasks = len(tasks_to_process)
         for task_index, task in enumerate(tasks_to_process, start=1):
             if progress_callback:
                 progress_callback("writing", task_index - 1, total_tasks, f"正在生成章节：{task.title}")
             try:
                 node = nodes_by_id[task.node_id]
+                assert_planning_generation_ready(self, project_id, task.node_id)
                 task.target_word_count = node.target_word_count
+                if self.workspace_store and hasattr(self.workspace_store, "session_factory"):
+                    from coalplan.application.outline_planning import OutlinePlanningService
+                    summary = OutlinePlanningService(self).summary_draft(project_id, task.node_id)
+                    if summary is not None:
+                        if progress_callback:
+                            progress_callback("paused_guard", 0, 1, "正在确认项目仍处于生成状态")
+                        self._record_chapter_version(project.id, node.id, summary, "ai_summary")
+                        task.status = TaskStatus.passed
+                        task.draft_id = summary.id
+                        task.error_message = None
+                        drafts.append(summary)
+                        self.projects.save(project)
+                        continue
                 dependency_hash = self._chapter_dependency_fingerprint(project, node)
                 cached_draft = self._reuse_unchanged_chapter(project.id, node, dependency_hash)
                 if cached_draft is not None:
@@ -1842,6 +1861,16 @@ class GenerationPipeline:
         revision_context: str = "",
         progress_callback: Callable[[str, int, int, str], None] | None = None,
     ) -> ChapterDraft:
+        from coalplan.application.outline_planning import assert_planning_generation_ready
+        assert_planning_generation_ready(self, project_id, node_id)
+        if self.workspace_store and hasattr(self.workspace_store, "session_factory"):
+            from coalplan.application.outline_planning import OutlinePlanningService
+            summary_draft = OutlinePlanningService(self).summary_draft(project_id, node_id)
+            if summary_draft is not None:
+                if progress_callback:
+                    progress_callback("paused_guard", 0, 1, "正在确认项目仍处于生成状态")
+                self._record_chapter_version(project_id, node_id, summary_draft, "ai_summary")
+                return summary_draft
         project = self.projects.get(project_id)
         run = project.runs[-1] if project.runs else self.prepare_run(project_id)
         project = self.projects.get(project_id)
@@ -3450,7 +3479,7 @@ class GenerationPipeline:
             pinned = [
                 AtomRetrievalResult(atom_id=atom_id, score=1.0, match_reason="用户在本章依据页窗中固定选择", prompt_use="优先借鉴工艺组织和控制闭环", atom=by_id[atom_id])
                 for atom_id in preferences["atom_ids"]
-                if atom_id in by_id and atom_id not in excluded_atom_ids and by_id[atom_id].status.value == "published"
+                if atom_id in by_id and atom_id not in excluded_atom_ids and by_id[atom_id].status.value == "published" and not by_id[atom_id].publication_blockers
             ]
             return [*pinned, *[item for item in candidates if item.atom_id not in excluded_atom_ids and item.atom_id not in {p.atom_id for p in pinned}]]
         except Exception as exc:
@@ -3463,6 +3492,10 @@ class GenerationPipeline:
                 ),
                 str(exc),
             )
+            # An automatic matcher outage must not erase the user's saved selections.
+            if hasattr(self.reference_library, "get_atoms"):
+                pinned_atoms = self.reference_library.get_atoms(preferences["atom_ids"])
+                return [AtomRetrievalResult(atom_id=atom.id, score=1.0, match_reason="用户固定选择；本次自动匹配未完成", prompt_use="仅借鉴工艺组织和控制逻辑，不迁移历史参数", atom=atom) for atom in pinned_atoms if atom.status.value == "published" and not atom.publication_blockers and atom.id not in excluded_atom_ids]
             return []
 
     def _update_project_generation_context(

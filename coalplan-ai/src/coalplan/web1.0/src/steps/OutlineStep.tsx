@@ -21,6 +21,7 @@ import { useToast } from "@/components/Toast"
 import { Badge, Button, Card, ConfirmDialog, EmptyState, LoadingBlock, SectionTitle, TextArea, TextInput } from "@/components/ui"
 import { cn } from "@/lib/utils"
 import { useJobs } from "@/components/Jobs"
+import { OutlinePlanning } from "@/components/OutlinePlanning"
 
 type TreeNode = OutlineNode & { _children: TreeNode[] }
 type RefineMode = "balanced" | "conservative" | "aggressive"
@@ -81,6 +82,7 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
   const outlineEditingBlocked = fullGeneration?.status === "queued" || fullGeneration?.status === "running"
   const outline = useAsyncData<OutlineNode[]>(() => listOutlineNodes(project.project_id), [project.project_id])
   const [generating, setGenerating] = useState(false)
+  const [planningActive, setPlanningActive] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [editorDirty, setEditorDirty] = useState(false)
   const [pendingSelection, setPendingSelection] = useState<string | null>(null)
@@ -150,6 +152,11 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
   }
 
   const requestGenerate = () => {
+    if (planningActive) {
+      document.querySelector('[aria-label="分阶段目录规划"]')?.scrollIntoView({ behavior: "smooth" })
+      toast.info("请在上方按项目理解、一级骨架、二级目录完成规划")
+      return
+    }
     if (outlineEditingBlocked) {
       toast.info("全量生成正在执行，请先暂停或等待完成后再修改目录")
       return
@@ -220,8 +227,10 @@ export function OutlineStep({ project, onNext }: { project: ProjectResponse; onN
 
   return (
     <div className="space-y-5">
+      <OutlinePlanning projectId={project.project_id} nodes={outline.data ?? []} onChanged={() => void outline.reload()} onPlanningActive={setPlanningActive} />
       <div className={cn(
         "flex flex-col gap-3 rounded-[var(--radius)] border px-4 py-3 sm:flex-row sm:items-center sm:justify-between",
+        planningActive && "hidden",
         outline.data?.length ? "border-primary/20 bg-primary/[0.04]" : "border-amber-300 bg-amber-50",
       )}>
         <div className="flex min-w-0 items-start gap-3">

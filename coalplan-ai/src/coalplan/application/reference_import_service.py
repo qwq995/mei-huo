@@ -22,6 +22,22 @@ def process_reference_markdown(*, pipeline, library, payload: dict) -> dict:
         document_kind=ReferenceDocumentKind(str(payload.get("document_kind") or ReferenceDocumentKind.special_plan.value)),
     )
     library.save_document(document)
+    if payload.get("schema_version") == "v2":
+        from coalplan.application.reference_atomization_v2 import atomize_reference_markdown_v2
+        result = atomize_reference_markdown_v2(document=document, markdown=content, llm=pipeline._structured_llm(), max_batches=payload.get("max_batches"))
+        existing, page = [], 1
+        while True:
+            batch, total = library.search_atoms_page(document_id=document.id, page=page, page_size=100)
+            existing.extend(batch)
+            if len(existing) >= total or not batch:
+                break
+            page += 1
+        # Retried imports retain previously reviewed/published content and successful batches.
+        atoms = {atom.id: atom for atom in result.atoms}
+        atoms.update({atom.id: atom for atom in existing})
+        library.replace_document_content(document.id, chapters=_chapters(document.id, result.segments), atoms=list(atoms.values()))
+        status = "partial" if result.failed_batches else "success"
+        return {"document": dump_model(document), "schema_version": "v2", "atom_count": len(atoms), "candidate_count": sum(a.status == ReferenceReviewStatus.pending_publish for a in atoms.values()), "llm_call_count": result.llm_call_count, "failed_batch_count": len(result.failed_batches), "failed_batches": result.failed_batches, "processing_status": status, "user_message": f"已保存 {len(atoms)} 条原子，等待审核发布。", "excluded_segments": result.excluded_segments}
     result = atomize_reference_markdown(
         document=document, markdown=content, llm=pipeline._structured_llm(),
         focus_terms=list(payload.get("focus_terms") or []), max_batches=payload.get("max_batches"), publish_for_validation=False,

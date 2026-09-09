@@ -1,0 +1,28 @@
+{
+  "version": "1.0",
+  "source": "中国安能集团第三工程局有限公司危险性较大分部分项工程专项施工方案编写指南",
+  "standard_currency": "not_verified",
+  "interpretation": "应包含内容表示内容覆盖要求；不据此锁定标题或顺序。指南适用于专项方案，综合施组按专业映射相关内容。",
+  "profiles": {
+    "power": {"label": "电力建设工程", "source_paragraphs": [2, 23], "required_modules": ["overview", "basis", "schedule", "technology", "safety", "personnel", "acceptance", "emergency", "attachments"]},
+    "water": {"label": "水利工程", "source_paragraphs": [24, 43], "required_modules": ["overview", "basis", "schedule", "technology", "safety", "personnel", "attachments"]},
+    "road": {"label": "公路工程", "source_paragraphs": [44, 63], "required_modules": ["overview", "basis", "schedule", "technology", "safety", "personnel", "attachments"]},
+    "building": {"label": "房建市政工程", "source_paragraphs": [64, 126], "required_modules": ["overview", "basis", "schedule", "technology", "safety", "personnel", "acceptance", "emergency", "attachments"]}
+  },
+  "modules": {
+    "overview": {"title": "工程概况", "tasks": ["项目范围与工程对象", "工程量与施工条件", "项目目标与风险"], "expand_by": "工程对象、地质水文、现场条件"},
+    "basis": {"title": "编制依据", "tasks": ["法律标准", "合同投标资料", "勘察设计文件", "其他已确认资料"], "role": "deferred_basis", "expand_by": "实际使用文件类别，正文完成后编写"},
+    "deployment": {"title": "施工部署", "tasks": ["区段划分", "总体顺序", "施工接口及重难点安排"], "expand_by": "区段、阶段和施工接口"},
+    "layout": {"title": "施工总平面布置", "tasks": ["临时设施", "施工道路及供水供电", "场地布置"], "expand_by": "实际临时设施和生产系统"},
+    "schedule": {"title": "施工计划", "tasks": ["施工进度", "材料设备与劳动力计划"], "expand_by": "阶段、节点和资源类别"},
+    "technology": {"title": "施工工艺技术", "tasks": ["适用范围", "技术参数", "工艺流程", "施工方法及操作要求", "检查要求"], "expand_by": "真实工程对象或主要工艺，操作步骤保留为写作任务"},
+    "quality": {"title": "质量保证措施", "tasks": ["质量职责", "过程检查", "整改及记录"], "expand_by": "管理职责及项目控制主题"},
+    "safety": {"title": "施工安全保证措施", "tasks": ["组织保障", "技术措施", "监测监控", "应急接口"], "expand_by": "实际风险和控制职责"},
+    "environment": {"title": "环境保护措施", "tasks": ["污染防治", "水土保持", "检查整改"], "expand_by": "项目污染源及保护对象"},
+    "personnel": {"title": "人员配备和分工", "tasks": ["施工管理人员", "专职安全人员", "特种及其他作业人员"], "expand_by": "岗位职责，未知名单不编造"},
+    "acceptance": {"title": "验收要求", "tasks": ["验收标准", "程序", "内容", "人员及成果"], "expand_by": "适用对象和验收程序"},
+    "emergency": {"title": "应急处置措施", "tasks": ["应急组织", "处置流程", "联络与应急资源"], "expand_by": "实际事故场景和处置职责"},
+    "attachments": {"title": "计算书及相关图纸", "tasks": ["设计计算书", "施工图纸", "审批成果"], "role": "external_attachment", "expand_by": "外部成果需求，缺失不可标记满足"}
+  },
+  "organization_modules": ["basis", "overview", "deployment", "layout", "schedule", "technology", "quality", "safety", "environment", "personnel", "acceptance", "emergency", "attachments"]
+}

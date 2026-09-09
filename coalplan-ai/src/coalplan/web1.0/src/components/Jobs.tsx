@@ -151,5 +151,7 @@ function JobRow({ job, onPause, onRetry }: { job: GenerationJob; onPause: () => 
 }
 
 export function jobLabel(type: GenerationJobType) {
-  return ({ directory_generation: "目录生成", chapter_generation: "章节生成", child_chapter_generation: "子章节生成", project_generation: "全量生成", chapter_group_recommendation: "联合生成建议", chapter_batch_generation: "批量章节更新", supplement_batch_ai_fill: "AI补全建议", quality_audit: "质量审查", compliance_review: "规范审查", outline_proposal: "目录调整建议", outline_refine: "目录精修建议", chapter_plan_proposal: "章节提纲优化", chapter_edit_proposal: "正文修改建议", reference_import: "优秀施组切分", reference_import_batch: "批量切分优秀施组" } as const)[type]
+  const planningLabels: Partial<Record<GenerationJobType, string>> = { outline_understand: "项目理解", outline_skeleton: "一级骨架", outline_chat: "对话调整", outline_expand: "二级扩充", outline_blueprint: "全书生成指导", outline_basis: "编制依据汇总" }
+  if (type in planningLabels) return planningLabels[type]
+  return ({ ...planningLabels, directory_generation: "目录生成", chapter_generation: "章节生成", child_chapter_generation: "子章节生成", project_generation: "全量生成", chapter_group_recommendation: "联合生成建议", chapter_batch_generation: "批量章节更新", supplement_batch_ai_fill: "AI补全建议", quality_audit: "质量审查", compliance_review: "规范审查", outline_proposal: "目录调整建议", outline_refine: "目录精修建议", chapter_plan_proposal: "章节提纲优化", chapter_edit_proposal: "正文修改建议", reference_import: "优秀施组切分", reference_import_batch: "批量切分优秀施组" } as const)[type]
 }

@@ -21,6 +21,7 @@ from .models import (
     LLMTraceRecord,
     ProjectOutlineNodeRecord,
     ProjectRecord,
+    OutlinePlanningRecord,
     SourceDocumentRecord,
     SourceSectionRecord,
 )
@@ -74,6 +75,7 @@ class DatabaseProjectRepository:
             if record is None:
                 raise KeyError(f"Unknown project_id: {project_id}")
             for model in (
+                OutlinePlanningRecord,
                 AIChangeProposalRecord,
                 ChapterAttachmentRecord,
                 ChapterSupplementRecord,

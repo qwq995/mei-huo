@@ -26,6 +26,15 @@ class ProjectRecord(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class OutlinePlanningRecord(Base):
+    __tablename__ = "outline_planning_sessions"
+
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True)
+    state_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
+
+
 class SourceDocumentRecord(Base):
     __tablename__ = "source_documents"
 

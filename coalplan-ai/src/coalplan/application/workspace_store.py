@@ -159,6 +159,7 @@ class WorkspaceStore:
                 if key in payload:
                     setattr(row, column, _json(payload[key]))
             row.updated_at = datetime.now()
+            _validate_planning_rows(session, project_id)
             session.commit()
             return _outline_dict(row)
 
@@ -168,6 +169,7 @@ class WorkspaceStore:
         with self.session_factory() as session:
             row = _get_outline(session, project_id, node_id)
             siblings = session.query(ProjectOutlineNodeRecord).filter_by(project_id=project_id, parent_id=row.parent_id).order_by(ProjectOutlineNodeRecord.sort_order.asc()).all()
+            previous_level = row.level
             index = next((i for i, item in enumerate(siblings) if item.node_id == node_id), -1)
             if direction in {"up", "down"}:
                 target_index = index - 1 if direction == "up" else index + 1
@@ -186,6 +188,18 @@ class WorkspaceStore:
                 row.parent_id = parent.parent_id
                 row.level = max(1, parent.level)
             row.updated_at = datetime.now()
+            if row.level != previous_level:
+                queue = [row.node_id]
+                seen = set()
+                while queue:
+                    parent_id = queue.pop()
+                    if parent_id in seen:
+                        raise ValueError("目录存在循环，无法移动。")
+                    seen.add(parent_id)
+                    for child in session.query(ProjectOutlineNodeRecord).filter_by(project_id=project_id, parent_id=parent_id).all():
+                        child.level += row.level - previous_level
+                        queue.append(child.node_id)
+            _validate_planning_rows(session, project_id)
             session.commit()
             return _outline_dict(row)
 
@@ -268,6 +282,7 @@ class WorkspaceStore:
                     child.level = max(1, (child.level or 1) - 1)
                     lower_descendant_levels(child.node_id)
                 session.delete(row)
+            _validate_planning_rows(session, project_id)
             session.commit()
 
     def outline_tree(self, project_id: str) -> list[TemplateNode]:
@@ -976,6 +991,16 @@ class WorkspaceStore:
                 self.artifacts.write_text(project_id, f"outline/snapshots/{snapshot_id}.json", _json({"snapshot_id": snapshot_id, "nodes": current}))
                 excluded = set(exclude_node_ids or [])
                 included = set(include_node_ids) if include_node_ids is not None else None
+                from coalplan.infrastructure.database.models import OutlinePlanningRecord
+                planning_row = session.get(OutlinePlanningRecord, project_id)
+                if planning_row:
+                    from coalplan.application.outline_planning import validate_structure
+                    effective = {n["node_id"]: n for n in current}
+                    for patch in data.get("nodes", []):
+                        nid = patch.get("node_id")
+                        if nid and nid not in excluded and (included is None or nid in included):
+                            effective[nid] = {**effective.get(nid, {}), **patch}
+                    validate_structure(list(effective.values()), json.loads(planning_row.state_json).get("requirements", []))
                 for patch in data.get("nodes", []):
                     node_id = patch.get("node_id")
                     if not node_id or node_id in excluded or (included is not None and node_id not in included):
@@ -1518,6 +1543,9 @@ def _proposal_dict(row: AIChangeProposalRecord) -> dict:
         "created_at": row.created_at.isoformat(),
         "applied_at": row.applied_at.isoformat() if row.applied_at else None,
     }
+    if row.target_type == "outline" and isinstance(preview, dict):
+        payload["snapshot_id"] = preview.get("snapshot_id")
+    return payload
 
 
 def _memory_dict(row: ProjectMemoryRecord) -> dict:
@@ -1578,11 +1606,6 @@ def _missing_related(left: str, right: str) -> bool:
     if not a or not b:
         return re.sub(r"\s+", "", left) == re.sub(r"\s+", "", right)
     return left == right or len(a & b) >= max(1, min(len(a), len(b)) // 2)
-    if row.target_type == "outline" and isinstance(preview, dict):
-        payload["snapshot_id"] = preview.get("snapshot_id")
-    return payload
-
-
 def _generation_plan_from_outline(row: ProjectOutlineNodeRecord) -> dict | None:
     summary = _loads(row.chapter_summary_json)
     plan = summary.get("generation_plan") if isinstance(summary, dict) else None
@@ -1593,6 +1616,20 @@ def _outline_fingerprint(nodes: list[dict]) -> str:
     normalized = [{key: node.get(key) for key in ("node_id", "parent_id", "title", "level", "sort_order", "enabled", "target_word_count", "source_rules", "auto_fill", "manual_fill", "special_notes")} for node in nodes]
     normalized.sort(key=lambda item: (item.get("sort_order") or 0, item.get("node_id") or ""))
     return hashlib.sha256(json.dumps(normalized, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _validate_planning_rows(session, project_id):
+    from coalplan.infrastructure.database.models import OutlinePlanningRecord
+    planning = session.get(OutlinePlanningRecord, project_id)
+    if not planning:
+        return
+    requirements = json.loads(planning.state_json).get("requirements", [])
+    if not requirements:
+        return
+    from coalplan.application.outline_planning import validate_structure
+    session.flush()
+    nodes = [_outline_dict(row) for row in session.query(ProjectOutlineNodeRecord).filter_by(project_id=project_id).all()]
+    validate_structure(nodes, requirements)
 
 
 def _outline_scope_ids(nodes: list[dict], scope_node_id: str | None, *, include_descendants: bool = True) -> set[str]:

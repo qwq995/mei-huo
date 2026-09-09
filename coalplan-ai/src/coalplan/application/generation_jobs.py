@@ -17,6 +17,7 @@ from coalplan.application.generation_pause import GenerationPauseRequested
 ACTIVE_STATUSES = {"queued", "running"}
 TERMINAL_STATUSES = {"completed", "partial", "failed", "interrupted", "paused"}
 SUPPORTED_JOB_TYPES = {
+    "outline_understand", "outline_skeleton", "outline_chat", "outline_expand", "outline_blueprint", "outline_basis",
     "directory_generation",
     "chapter_generation",
     "child_chapter_generation",
@@ -168,6 +169,10 @@ class GenerationJobManager:
             self._update(job_id, status="failed", stage="failed", message="任务执行失败，可查看详情后重试", error=str(exc), completed=True)
 
     def _execute(self, project_id: str, job_type: str, payload: dict, progress: Callable[[str, int, int, str], None]) -> Any:
+        if job_type in {"outline_understand", "outline_skeleton", "outline_chat", "outline_expand", "outline_blueprint", "outline_basis"}:
+            from coalplan.application.outline_planning import OutlinePlanningService
+            progress("planning", 0, 1, "正在准备目录规划")
+            return OutlinePlanningService(self.pipeline).execute(project_id, job_type.removeprefix("outline_"), payload, progress)
         if job_type == "directory_generation":
             progress("directory", 0, 1, "正在依据模板和投标资料生成目录")
             project = self.pipeline.prepare_directory(project_id, force=bool(payload.get("force", True)))
@@ -301,10 +306,17 @@ class GenerationJobManager:
                 except Exception as exc:
                     failures.append({"file_name": item.get("file_name", "未命名"), "error": str(exc)})
             progress("saving", len(files), len(files), "已保存已完成文档，可立即审核候选原子")
-            return {"status": "partial" if failures else "success", "results": results, "failed": failures, "document_count": len(results), "atom_count": sum(item.get("atom_count", 0) for item in results)}
+            incomplete = failures or any(item.get("processing_status") in {"partial", "failed"} for item in results)
+            return {"status": "partial" if incomplete else "success", "results": results, "failed": failures, "document_count": len(results), "atom_count": sum(item.get("atom_count", 0) for item in results)}
         raise ValueError(f"Unsupported job_type: {job_type}")
 
     def _run_parallel_chapters(self, project_id: str, node_ids: list[str], parallelism: int, progress) -> dict:
+        from coalplan.application.outline_planning import OutlinePlanningService, ordered_generation_ids
+        node_ids = ordered_generation_ids(self.pipeline, project_id, node_ids)
+        contracts = {}
+        if getattr(self.pipeline.workspace_store, "session_factory", None):
+            planning = OutlinePlanningService(self.pipeline).get(project_id)
+            contracts = {c["node_id"]: c for c in planning.get("blueprint", {}).get("contracts", [])}
         total = len(node_ids)
         if not total:
             return {"status": "completed", "results": [], "failed": []}
@@ -318,16 +330,32 @@ class GenerationJobManager:
             return self.pipeline.generate_one(project_id, node_id, progress_callback=lambda *_: None)
 
         with ThreadPoolExecutor(max_workers=parallelism, thread_name_prefix="coalplan-chapter") as executor:
-            futures = {executor.submit(run_one, node_id): node_id for node_id in node_ids}
-            for future in as_completed(futures):
-                node_id = futures[future]
-                try:
-                    draft = future.result()
-                    results.append({"node_id": node_id, "draft_id": draft.id, "status": draft.validation_status.value})
-                except Exception as exc:
-                    failures.append({"node_id": node_id, "error": str(exc)})
-                completed += 1
-                progress("writing", completed, total, f"已完成 {completed}/{total} 个章节")
+            pending = list(node_ids)
+            failed_ids = set()
+            while pending:
+                ready = [nid for nid in pending if not set(contracts.get(nid, {}).get("dependencies", [])) & set(pending)]
+                if not ready:
+                    raise ValueError("章节依赖循环，无法继续生成。")
+                futures = {}
+                for nid in ready:
+                    if set(contracts.get(nid, {}).get("dependencies", [])) & failed_ids:
+                        failures.append({"node_id": nid, "error": "前置章节未完成，请处理后重试"})
+                        failed_ids.add(nid)
+                        completed += 1
+                    else:
+                        progress("writing", completed, total, "正在执行无前后依赖的章节组")
+                        futures[executor.submit(run_one, nid)] = nid
+                for future in as_completed(futures):
+                    node_id = futures[future]
+                    try:
+                        draft = future.result()
+                        results.append({"node_id": node_id, "draft_id": draft.id, "status": draft.validation_status.value})
+                    except Exception as exc:
+                        failures.append({"node_id": node_id, "error": str(exc)})
+                        failed_ids.add(node_id)
+                    completed += 1
+                    progress("writing", completed, total, f"已完成 {completed}/{total} 个章节")
+                pending = [nid for nid in pending if nid not in ready]
         # Each worker writes its own chapter/version artifacts. Reconcile the
         # single project state once after all workers finish.
         run = self.pipeline.sync_generation_tasks(project_id)

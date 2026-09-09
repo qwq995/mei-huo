@@ -16,7 +16,7 @@ def sqlite_url_for_storage(storage_dir: Path) -> str:
 
 
 def create_session_factory(database_url: str):
-    connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
+    connect_args = {"check_same_thread": False, "timeout": 30} if database_url.startswith("sqlite") else {}
     poolclass = NullPool if database_url.startswith("sqlite") else None
     engine = create_engine(database_url, connect_args=connect_args, poolclass=poolclass, future=True)
     return sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
@@ -24,6 +24,10 @@ def create_session_factory(database_url: str):
 
 def init_database(session_factory) -> None:
     engine = session_factory.kw["bind"]
+    if engine.dialect.name == "sqlite":
+        # Keep task polling and library browsing readable during index updates.
+        with engine.connect() as connection:
+            connection.exec_driver_sql("PRAGMA journal_mode=WAL")
     Base.metadata.create_all(engine)
     _ensure_lightweight_sqlite_migrations(engine)
     _ensure_standard_search_indexes(engine)

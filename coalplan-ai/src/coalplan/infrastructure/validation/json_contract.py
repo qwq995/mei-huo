@@ -40,7 +40,7 @@ class TemplateOutlinePlanValidator:
             for section_id in node.source_hints:
                 if section_id not in valid_source_ids:
                     issues.append(ValidationIssue(code="invalid_source_hint", message=f"Unknown source_hints section_id: {section_id}"))
-            if node.enabled and node.node_id not in parent_ids and not (node.main_sources and node.auto_fill and node.manual_fill):
+            if node.enabled and node.node_id not in parent_ids and not (node.main_sources and node.auto_fill):
                 issues.append(ValidationIssue(code="missing_outline_modules", message=f"Outline node lacks required modules: {node.title}"))
         return ValidationResult(passed=not issues, issues=issues)
 

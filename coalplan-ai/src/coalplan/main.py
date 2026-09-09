@@ -75,6 +75,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(jobs_router)
     app.include_router(standard_constraints_router)
     app.include_router(outline_templates_router)
+    from coalplan.interfaces.api.routes_outline_planning import router as outline_planning_router
+    app.include_router(outline_planning_router)
     return app
 
 

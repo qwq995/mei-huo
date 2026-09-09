@@ -20,6 +20,7 @@ class ProjectTemplateUpdateRequest(BaseModel):
 
 
 class BidMarkdownUploadRequest(BaseModel):
+    append: bool = False
     file_name: str = Field(default="投标技术文件.md")
     content: str
 

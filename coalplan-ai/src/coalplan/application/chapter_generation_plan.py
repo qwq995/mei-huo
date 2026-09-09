@@ -46,6 +46,13 @@ class ChapterGenerationPlan(BaseModel):
     source: Literal["system", "ai", "user"] = "system"
     updated_at: str = ""
     fingerprint: str = ""
+    writing_skills: list[str] = Field(default_factory=list)
+    interfaces: list[str] = Field(default_factory=list)
+    dependencies: list[str] = Field(default_factory=list)
+    source_section_ids: list[str] = Field(default_factory=list)
+    generation_role: str = "independent"
+    blueprint_summary: str = ""
+    blueprint_version: int | None = None
 
     @field_validator("scope_statement")
     @classmethod
@@ -153,6 +160,15 @@ def render_chapter_plan_for_prompt(plan: dict | ChapterGenerationPlan | None) ->
     # Manual inputs are collected separately and only enter generation after the user saves them.
     if value.user_notes:
         lines.append(f"- 用户备注：{value.user_notes}")
+    if value.blueprint_summary:
+        lines.append(f"- 全书组织：{value.blueprint_summary}")
+        lines.append("- 本蓝图优先于通用占位规则：未知文件、参数与未确认信息仅记入独立缺口台账；不得将待补充、缺失项或人工占位写入交付正文。")
+    if value.writing_skills:
+        lines.extend(["- 写作技巧（组织与表达，不提供事实）：", *value.writing_skills])
+    if value.interfaces:
+        lines.extend(["- 跨章接口：", *value.interfaces])
+    if value.source_section_ids:
+        lines.append("- 规划映射来源：" + "、".join(value.source_section_ids))
     lines.append("不得新增提纲之外的独立三级或四级主题；确需扩展时保留人工建议，不写入本次正文。")
     return "\n".join(lines)
 

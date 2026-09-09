@@ -86,6 +86,7 @@ function Studio() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+          <a className="rounded border border-border px-3 py-2 text-xs font-medium text-primary hover:bg-muted" href={`./studio.html?view=projects${project ? `&project=${project.project_id}` : ""}`}>进入新版工作台</a>
           {project ? (
             <div className="hidden max-w-[300px] items-center gap-2 rounded-full border border-white/60 bg-white/55 px-3 py-1.5 shadow-sm backdrop-blur md:flex">
               <span className="h-2 w-2 rounded-full bg-accent" />

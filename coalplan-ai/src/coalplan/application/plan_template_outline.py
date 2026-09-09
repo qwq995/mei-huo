@@ -51,8 +51,8 @@ def plan_template_outline(
             schema_name="TemplateOutlinePlan",
         )
         outline = TemplateOutlinePlan(**data)
-    except Exception:
-        outline = _fallback_outline(profile, template_tree, toc_items)
+    except Exception as exc:
+        raise ValueError("AI 目录规划失败，请重试或手动选择预置模板。") from exc
     outline.plan_source = "ai_plan"
     outline = _clean_outline(outline, template_tree, toc_items)
     outline = _ensure_skill_expansions(outline, template_tree, toc_items)
@@ -472,6 +472,12 @@ def _ensure_skill_expansions(
         if not matches:
             continue
         match = matches[0]
+        if match.skill_key not in {
+            "construction-craft-chapter", "construction-safety-chapter",
+            "construction-quality-chapter", "construction-environment-chapter",
+            "construction-schedule-resource-chapter",
+        }:
+            continue
         parent.matched_skill_keys = [match.skill_key]
         children = [node for node in outline.nodes if node.parent_node_id == parent.node_id and node.enabled]
         existing_titles = {node.title for node in children}
@@ -768,7 +774,8 @@ def _normalize_outline_text(value: str) -> str:
 
 
 def _skill_keys_for_title(title: str) -> list[str]:
-    return [item.skill_key for item in match_chapter_skills(title=title, limit=1)]
+    outline_skills = {"construction-craft-chapter", "construction-safety-chapter", "construction-quality-chapter", "construction-environment-chapter", "construction-schedule-resource-chapter"}
+    return [item.skill_key for item in match_chapter_skills(title=title, limit=1) if item.skill_key in outline_skills]
 
 
 def _skill_expansion_owner_keys(title: str) -> list[str]:

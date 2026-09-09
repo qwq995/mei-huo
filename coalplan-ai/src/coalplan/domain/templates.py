@@ -23,6 +23,9 @@ class TemplateNode(BaseModel):
 
     @property
     def has_generation_contract(self) -> bool:
+        plan = self.chapter_summary.get("generation_plan") or {}
+        if plan.get("blueprint_version"):
+            return plan.get("generation_role") not in {"deferred_basis", "external_attachment"}
         return bool(self.source_rules or self.auto_fill or self.manual_fill or self.special_notes)
 
 

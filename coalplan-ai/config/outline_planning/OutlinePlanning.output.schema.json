@@ -1,0 +1,6 @@
+{
+  "type": "object",
+  "properties": {"result_json": {"type": "string", "description": "JSON serialized object conforming to the task-specific output_schema in the prompt"}},
+  "required": ["result_json"],
+  "additionalProperties": false
+}

@@ -122,7 +122,7 @@ def delete_project(project_id: str, request: Request, keep_artifacts: bool = Tru
 def upload_bid_markdown(project_id: str, payload: BidMarkdownUploadRequest, request: Request):
     pipeline = request.app.state.pipeline
     try:
-        project = pipeline.ingest_bid_markdown(project_id, file_name=payload.file_name, content=payload.content)
+        project = pipeline.ingest_bid_markdown(project_id, file_name=payload.file_name, content=payload.content, append=payload.append)
         return project_summary(project)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -198,6 +198,18 @@ def list_source_documents(project_id: str, request: Request):
             }
             for document in project.source_documents
         ]
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/source-documents/{document_id}/sections")
+def list_document_sections(project_id: str, document_id: str, request: Request):
+    try:
+        project = request.app.state.pipeline.projects.get(project_id)
+        document = next((d for d in project.source_documents if d.id == document_id), None)
+        if document is None:
+            raise KeyError("Source document does not belong to this project")
+        return [{"section_id": s.id, "title_path": s.title_path, "level": s.level, "char_count": len(s.content), "snippet": s.content[:160]} for s in project.sections if s.source_file == document.file_name]
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

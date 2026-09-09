@@ -920,7 +920,7 @@ export type ChapterTaskSummary = {
 };
 
 export type GenerationJobStatus = "queued" | "running" | "completed" | "partial" | "failed" | "interrupted" | "paused";
-export type GenerationJobType = "directory_generation" | "chapter_generation" | "child_chapter_generation" | "project_generation" | "chapter_group_recommendation" | "chapter_batch_generation" | "supplement_batch_ai_fill" | "quality_audit" | "outline_proposal" | "outline_refine" | "chapter_plan_proposal" | "chapter_edit_proposal" | "reference_import" | "reference_import_batch" | "compliance_review";
+export type GenerationJobType = "outline_understand" | "outline_skeleton" | "outline_chat" | "outline_expand" | "outline_blueprint" | "outline_basis" | "directory_generation" | "chapter_generation" | "child_chapter_generation" | "project_generation" | "chapter_group_recommendation" | "chapter_batch_generation" | "supplement_batch_ai_fill" | "quality_audit" | "outline_proposal" | "outline_refine" | "chapter_plan_proposal" | "chapter_edit_proposal" | "reference_import" | "reference_import_batch" | "compliance_review";
 export type GenerationJob = {
   job_id: string;
   project_id: string;
