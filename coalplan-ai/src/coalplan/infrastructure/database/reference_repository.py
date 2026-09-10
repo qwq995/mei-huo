@@ -253,6 +253,23 @@ class ReferenceLibraryRepository:
         self._refresh_search_indexes()
         return atom
 
+    def update_atoms(self, atoms: list[ReferenceAtom]) -> list[ReferenceAtom]:
+        """Persist a reviewed repair batch in one transaction."""
+        if not atoms:
+            return []
+        with self.session_factory() as session:
+            for atom in atoms:
+                record = session.get(ReferenceAtomRecord, atom.id)
+                if record is None:
+                    continue
+                atom.version = record.version + 1
+                values = _atom_record(atom)
+                for key in ("content", "title_path_json", "tags_json", "applicability_json", "prohibited_scenarios_json", "fact_variables_json", "quality_score", "confidence", "status", "version"):
+                    setattr(record, key, getattr(values, key))
+            session.commit()
+        self._refresh_search_indexes()
+        return atoms
+
     def _refresh_search_indexes(self) -> None:
         """Refresh small local FTS mirrors after incremental writes."""
         with self.session_factory() as session:

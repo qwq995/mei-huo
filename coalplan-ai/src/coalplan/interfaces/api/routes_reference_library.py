@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from coalplan.application.reference_atom_retrieval import retrieve_reference_atoms
 from coalplan.application.reference_atom_audit import audit_atoms
+from coalplan.application.reference_atom_repair import repair_atoms
 from coalplan.application.hybrid_atom_retrieval import build_query_text, hybrid_prefilter_atoms, query_filters
 from coalplan.application.reference_atom_v2 import evaluate_publication_gate, finalize_v2_atom
 from coalplan.application.reference_atom_query import classify_atom_retrieval_query
@@ -93,6 +94,10 @@ class ReferenceAtomAuditRequest(BaseModel):
     apply: bool = False
     quality_threshold: float = Field(default=0.94, ge=0, le=1)
     atom_ids: list[str] = Field(default_factory=list, max_length=1000)
+
+
+class ReferenceAtomRepairRequest(ReferenceAtomAuditRequest):
+    apply: bool = False
 
 
 @router.get("/documents")
@@ -256,8 +261,22 @@ def audit_reference_atoms(payload: ReferenceAtomAuditRequest, request: Request):
         atoms = [atom for atom in atoms if atom.id in selected]
     report = audit_atoms(atoms, quality_threshold=payload.quality_threshold)
     if payload.apply:
-        for atom in report["atoms"]:
-            library.update_atom(atom)
+        library.update_atoms(report["atoms"])
+    report.pop("atoms", None)
+    return report
+
+
+@router.post("/atoms/repair")
+def repair_reference_atoms(payload: ReferenceAtomRepairRequest, request: Request):
+    """Repair only source-grounded fields; unresolved items remain candidates."""
+    library = request.app.state.reference_library
+    atoms = library.list_atoms()
+    if payload.atom_ids:
+        selected = set(payload.atom_ids)
+        atoms = [atom for atom in atoms if atom.id in selected]
+    report = repair_atoms(atoms, quality_threshold=payload.quality_threshold)
+    if payload.apply:
+        library.update_atoms(report["atoms"])
     report.pop("atoms", None)
     return report
 
