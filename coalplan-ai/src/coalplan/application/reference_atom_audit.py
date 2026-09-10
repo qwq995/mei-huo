@@ -86,7 +86,12 @@ def audit_atom(atom: ReferenceAtom, *, quality_threshold: float = 0.94) -> tuple
     ]
     unsupported = [item for item in structured if not _has_structured_overlap(item, atom.raw_excerpt)]
     if unsupported:
-        blockers.append("结构化字段存在原文无法支撑的内容")
+        # AI may normalize a source sentence into a concise control point.
+        # Only block when most structured claims have no source overlap;
+        # isolated paraphrases remain visible as a review warning.
+        unsupported_ratio = len(unsupported) / max(1, len(structured))
+        if len(unsupported) >= 3 and unsupported_ratio >= 0.6:
+            blockers.append("结构化字段存在原文无法支撑的内容")
         warnings.append("结构化字段待人工核对：" + "；".join(unsupported[:3]))
 
     if HISTORICAL_RE.search(atom.content):
