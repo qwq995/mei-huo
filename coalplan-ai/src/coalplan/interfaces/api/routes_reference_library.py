@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from coalplan.application.reference_atom_retrieval import retrieve_reference_atoms
+from coalplan.application.reference_atom_audit import audit_atoms
 from coalplan.application.hybrid_atom_retrieval import build_query_text, hybrid_prefilter_atoms, query_filters
 from coalplan.application.reference_atom_v2 import evaluate_publication_gate, finalize_v2_atom
 from coalplan.application.reference_atom_query import classify_atom_retrieval_query
@@ -86,6 +87,12 @@ class ReferenceAtomUpdateRequest(BaseModel):
     prohibited_scenarios: list[str] | None = None
     quality_score: float | None = Field(default=None, ge=0, le=1)
     confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class ReferenceAtomAuditRequest(BaseModel):
+    apply: bool = False
+    quality_threshold: float = Field(default=0.94, ge=0, le=1)
+    atom_ids: list[str] = Field(default_factory=list, max_length=1000)
 
 
 @router.get("/documents")
@@ -233,6 +240,26 @@ def search_reference_atoms(
         "page_size": page_size,
         "has_more": start + page_size < total,
     }
+
+
+@router.post("/atoms/audit")
+def audit_reference_atoms(payload: ReferenceAtomAuditRequest, request: Request):
+    """Audit V2 atoms and optionally persist safe normalization plus blockers.
+
+    The audit never invents content. Suspicious atoms are removed from the
+    published pool by status/blocker changes and remain available for review.
+    """
+    library = request.app.state.reference_library
+    atoms = library.list_atoms()
+    if payload.atom_ids:
+        selected = set(payload.atom_ids)
+        atoms = [atom for atom in atoms if atom.id in selected]
+    report = audit_atoms(atoms, quality_threshold=payload.quality_threshold)
+    if payload.apply:
+        for atom in report["atoms"]:
+            library.update_atom(atom)
+    report.pop("atoms", None)
+    return report
 
 
 @router.post("/import-ai")
