@@ -970,7 +970,11 @@ export type ComplianceReviewResponse = {
   message: string;
 };
 
-export const API_BASE = import.meta.env.VITE_COALPLAN_API_BASE ?? "http://127.0.0.1:8010";
+// Use the same-origin Nginx proxy in production so a remote browser never
+// tries to call its own localhost. Vite development keeps the local API port.
+export const API_BASE =
+  import.meta.env.VITE_COALPLAN_API_BASE ??
+  (import.meta.env.DEV ? "http://127.0.0.1:8010" : "/api");
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
